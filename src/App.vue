@@ -284,11 +284,11 @@ const activeLayers = computed(() => {
     { url: assets.mouths?.url, kind: 'plain', ...partTransform('mouths') },
     { url: assets.noses?.url, kind: 'skin', color: skin, ...partTransform('noses') },
     {
-      url: assets.eyes?.url,
-      kind: 'eyes',
-      color: eyes,
-      whiteBlend: (skin.tone / 100) * 0.18,
-      ...partTransform('eyes')
+      url: assets.eyebrow?.url,
+      kind: 'hair',
+      color: hair,
+      stripWhiteEdge: true,
+      ...partTransform('eyebrow')
     },
     {
       url: assets.fonthair?.url,
@@ -298,11 +298,11 @@ const activeLayers = computed(() => {
       ...partTransform('fonthair')
     },
     {
-      url: assets.eyebrow?.url,
-      kind: 'hair',
-      color: hair,
-      stripWhiteEdge: true,
-      ...partTransform('eyebrow')
+      url: assets.eyes?.url,
+      kind: 'eyes',
+      color: eyes,
+      whiteBlend: (skin.tone / 100) * 0.18,
+      ...partTransform('eyes')
     }
   ].filter(Boolean)
 })
@@ -518,9 +518,9 @@ onBeforeUnmount(() => {
             <strong>{{ canvasWidth }} x {{ canvasHeight }}</strong>
           </div>
           <div class="layer-tags" aria-label="&#22270;&#23618;&#39034;&#24207;">
+            <span>&#30524;&#30555;</span>
             <span>&#21069;&#21457;</span>
             <span>&#30473;&#27611;</span>
-            <span>&#30524;&#30555;</span>
             <span>&#40763;&#23376;</span>
             <span>&#22068;&#22411;</span>
             <span>&#34915;&#39280;&#21069;&#23618;</span>

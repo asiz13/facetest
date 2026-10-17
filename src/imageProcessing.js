@@ -178,7 +178,7 @@ export function recolorHair(imageData, target, options = {}) {
           deepShadow
         )
       : Math.pow(clamp((sourceValue - base) / highlightSpan, 0, 1), 0.88)
-    const saturation = clamp(targetSaturation * (0.94 + Math.abs(relativeTone) * 0.06), 0, 1)
+    const saturation = clamp(targetSaturation * (1 + shadowTone * 0.08), 0, 1)
     const value = clamp(
       relativeTone < 0
         ? targetValue + relativeTone * (targetValue - shadowValue)
