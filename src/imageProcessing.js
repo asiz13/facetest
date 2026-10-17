@@ -62,10 +62,9 @@ function hasTransparentNeighbor(data, width, height, index, radius = 2) {
   return false
 }
 
-function hairToneProfile(imageData) {
+function buildValueProfile(imageData, accept) {
   const data = imageData.data
   const valueHistogram = new Uint32Array(256)
-  const saturationHistogram = new Uint32Array(256)
   let total = 0
 
   for (let i = 0; i < data.length; i += 4) {
@@ -75,22 +74,15 @@ function hairToneProfile(imageData) {
     const b = data[i + 2]
     const max = Math.max(r, g, b)
     const min = Math.min(r, g, b)
-    if (r + g + b > 735 && max - min < 18) continue
-
     const saturation = max === 0 ? 0 : (max - min) / max
+    if (!accept({ r, g, b, alpha: data[i + 3], max, min, saturation, value: max / 255 })) continue
+
     valueHistogram[max] += 1
-    saturationHistogram[Math.round(saturation * 255)] += 1
     total += 1
   }
 
   if (total === 0) {
-    return {
-      low: 0,
-      base: 128,
-      high: 255,
-      baseSaturation: 0.5,
-      highSaturation: 0.5
-    }
+    return { low: 0, base: 128, high: 255 }
   }
 
   const percentile = (histogram, ratio) => {
@@ -106,34 +98,39 @@ function hairToneProfile(imageData) {
   return {
     low: percentile(valueHistogram, 0.08),
     base: percentile(valueHistogram, 0.5),
-    high: percentile(valueHistogram, 0.92),
-    baseSaturation: percentile(saturationHistogram, 0.5) / 255,
-    highSaturation: percentile(saturationHistogram, 0.92) / 255
+    high: percentile(valueHistogram, 0.92)
   }
+}
+
+function normalizedTargetValue(sourceValue, profile, targetValue, options = {}) {
+  const base = profile.base
+  if (sourceValue <= base) {
+    const span = Math.max(base - profile.low, 1)
+    const shadowWeight = Math.pow(clamp((base - sourceValue) / span, 0, 1), options.shadowGamma ?? 0.85)
+    const shadowValue = targetValue * (options.shadowFactor ?? 0.16)
+    return targetValue + (shadowValue - targetValue) * shadowWeight
+  }
+
+  const span = Math.max(profile.high - base, 1)
+  const highlightWeight = Math.pow(clamp((sourceValue - base) / span, 0, 1), 0.9)
+  const highlightValue = clamp(
+    targetValue + (1 - targetValue) * (options.highlightFactor ?? 0.18),
+    0,
+    1
+  )
+  return targetValue + (highlightValue - targetValue) * highlightWeight
 }
 
 export function recolorHair(imageData, target, options = {}) {
   const data = imageData.data
-  const targetSaturation = target.s / 100
-  const targetValue = target.v / 100
-  const {
-    low,
-    base,
-    high,
-    baseSaturation,
-    highSaturation
-  } = hairToneProfile(imageData)
-  const shadowSpan = Math.max(base - low, 24)
-  const highlightSpan = Math.max(high - base, 24)
-  const saturationShadowSpan = Math.max(highSaturation - baseSaturation, 0.08)
-  const hasSaturationLayers = highSaturation - baseSaturation > 0.08
-  const outlineValue = targetValue * (0.12 + targetValue * 0.28)
-  const layerShadowValue = targetValue * (0.36 + targetValue * 0.22)
-  const highlightValue = clamp(
-    targetValue + (1 - targetValue) * 0.18,
-    targetValue + 0.05,
-    0.98
-  )
+  const targetSaturation = clamp(target.s / 100, 0, 1)
+  const targetValue = clamp(target.v / 100, 0, 1)
+  const profile = buildValueProfile(imageData, ({ alpha, max, saturation }) => {
+    if (alpha < 160) return false
+    if (options.stripWhiteEdge && max > 238 && saturation < 0.08) return false
+    return true
+  })
+  const shadowSpan = Math.max(profile.base - profile.low, 1)
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
@@ -142,9 +139,11 @@ export function recolorHair(imageData, target, options = {}) {
     const r = data[i]
     const g = data[i + 1]
     const b = data[i + 2]
-    const hsv = rgbToHsv(r, g, b)
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const saturation = max === 0 ? 0 : (max - min) / max
 
-    if (options.stripWhiteEdge && hsv.value > 0.9 && hsv.s < 0.08) {
+    if (options.stripWhiteEdge && max > 230 && saturation < 0.08) {
       const softEdge = alpha < 250
       const boundaryEdge = hasTransparentNeighbor(
         data,
@@ -158,35 +157,13 @@ export function recolorHair(imageData, target, options = {}) {
       }
     }
 
-    const sourceValue = hsv.v * 255
-    const valueShadow = sourceValue < base
-      ? Math.pow(clamp((base - sourceValue) / shadowSpan, 0, 1), 0.78)
-      : 0
-    const saturationShadow = hasSaturationLayers
-      ? clamp((hsv.s - baseSaturation) / saturationShadowSpan, 0, 1)
-      : 0
-    const shadowTone = Math.max(valueShadow, saturationShadow)
-    const shadowValue = valueShadow >= saturationShadow
-      ? outlineValue
-      : layerShadowValue
-    const deepShadow = low > 0
-      ? clamp((low - sourceValue) / low, 0, 1) * 0.55
-      : 0
-    const relativeTone = sourceValue < base
-      ? -(
-          Math.pow(shadowTone, 0.8) +
-          deepShadow
-        )
-      : Math.pow(clamp((sourceValue - base) / highlightSpan, 0, 1), 0.88)
-    const saturation = clamp(targetSaturation * (1 + shadowTone * 0.08), 0, 1)
-    const value = clamp(
-      relativeTone < 0
-        ? targetValue + relativeTone * (targetValue - shadowValue)
-        : targetValue + relativeTone * (highlightValue - targetValue),
-      0,
-      1
+    const lightWeight = clamp((max - profile.low) / shadowSpan, 0, 1)
+    const shadowWeight = 1 - lightWeight
+    const output = hsvToRgb(
+      target.h + shadowWeight,
+      clamp(targetSaturation + shadowWeight * 0.17, 0, 1),
+      targetValue
     )
-    const output = hsvToRgb(target.h, saturation, value)
 
     data[i] = output.r
     data[i + 1] = output.g
@@ -196,8 +173,11 @@ export function recolorHair(imageData, target, options = {}) {
 
 export function recolorBlush(imageData, target) {
   const data = imageData.data
-  const targetSaturation = clamp(target.s / 100, 0.25, 0.65)
-  const targetValue = clamp(target.v / 100, 0.55, 0.95)
+  const targetSaturation = clamp(target.s / 100, 0, 1)
+  const targetValue = clamp(target.v / 100, 0, 1)
+  const profile = buildValueProfile(imageData, ({ alpha, max, saturation }) =>
+    alpha >= 32 && (max < 246 || saturation > 0.025)
+  )
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
@@ -206,8 +186,12 @@ export function recolorBlush(imageData, target) {
     const source = rgbToHsv(data[i], data[i + 1], data[i + 2])
     if (source.s < 0.025 && source.v > 0.96) continue
 
-    const sourceShade = clamp(0.82 + source.v * 0.18, 0.82, 1)
-    const output = hsvToRgb(target.h, targetSaturation, targetValue * sourceShade)
+    const value = normalizedTargetValue(source.v * 255, profile, targetValue, {
+      shadowFactor: 0.68,
+      shadowGamma: 0.95,
+      highlightFactor: 0.06
+    })
+    const output = hsvToRgb(target.h, targetSaturation, value)
     data[i] = output.r
     data[i + 1] = output.g
     data[i + 2] = output.b
@@ -216,9 +200,14 @@ export function recolorBlush(imageData, target) {
 
 export function recolorEyes(imageData, target, options = {}) {
   const data = imageData.data
-  const targetSaturation = target.s / 100
-  const targetValue = target.v / 100
+  const targetSaturation = clamp(target.s / 100, 0, 1)
+  const targetValue = clamp(target.v / 100, 0, 1)
   const whiteBlend = clamp(options.whiteBlend ?? 0, 0, 0.22)
+  const profile = buildValueProfile(
+    imageData,
+    ({ alpha, max, min, saturation }) =>
+      alpha >= 64 && max > 28 && saturation >= 0.16 && max !== min
+  )
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
@@ -243,14 +232,12 @@ export function recolorEyes(imageData, target, options = {}) {
     }
     if (value < 0.11 || saturation < 0.2) continue
 
-    const shade = clamp(value / 0.9, 0.22, 1.16)
-    const outputSaturation = clamp(
-      targetSaturation * clamp(saturation / 0.82, 0.72, 1.12),
-      0,
-      1
-    )
-    const outputValue = clamp(targetValue * shade, 0, 1)
-    const output = hsvToRgb(target.h, outputSaturation, outputValue)
+    const outputValue = normalizedTargetValue(max, profile, targetValue, {
+      shadowFactor: 0.2,
+      shadowGamma: 0.82,
+      highlightFactor: 0.18
+    })
+    const output = hsvToRgb(target.h, targetSaturation, outputValue)
 
     data[i] = output.r
     data[i + 1] = output.g

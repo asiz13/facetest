@@ -45,6 +45,7 @@ for (const [path, url] of Object.entries(assetModules)) {
   assetBuckets[folder].push({
     file,
     url,
+    previewUrl: `${import.meta.env.BASE_URL}previews-webp/${file.replace(/\.[^.]+$/, '.webp')}`,
     order: numeric ? Number(numeric[0]) : Number.MAX_SAFE_INTEGER
   })
 }
@@ -64,19 +65,36 @@ const selected = reactive({
   behindhair: 0
 })
 
+function defaultPartState(key) {
+  return {
+    enabled: true,
+    visible: key !== 'shy',
+    offsetX: 0,
+    offsetY: 0,
+    scale: 100,
+    spacing: 0,
+    closeMode: 'reset'
+  }
+}
+
 const partState = reactive(
   Object.fromEntries(
     partDefinitions.map((definition) => [
       definition.key,
-      {
-        enabled: definition.key !== 'shy',
-        visible: definition.key !== 'shy',
-        offsetX: 0,
-        offsetY: 0,
-        scale: 100,
-        spacing: 0,
-        closeMode: 'reset'
-      }
+      Array.from(
+        { length: assetBuckets[definition.key]?.length ?? 0 },
+        () => defaultPartState(definition.key)
+      )
+    ])
+  )
+)
+
+const selectedPartState = computed(() =>
+  Object.fromEntries(
+    partDefinitions.map((definition) => [
+      definition.key,
+      partState[definition.key]?.[selected[definition.key]] ??
+        defaultPartState(definition.key)
     ])
   )
 )
@@ -174,7 +192,10 @@ const renderSignature = computed(() =>
   JSON.stringify({
     selected: { ...selected },
     parts: Object.fromEntries(
-      partDefinitions.map((definition) => [definition.key, { ...partState[definition.key] }])
+      partDefinitions.map((definition) => [
+        definition.key,
+        partState[definition.key].map((state) => ({ ...state }))
+      ])
     ),
     hair: { h: hair.h, s: hair.s, v: hair.v },
     eyes: { h: eyes.h, s: eyes.s, v: eyes.v },
@@ -185,25 +206,46 @@ const renderSignature = computed(() =>
 
 const canvasRef = ref(null)
 const miniCanvasRef = ref(null)
+const isRendering = ref(true)
+const isExporting = ref(false)
+const exportWidth = 1301
+const exportHeight = 1479
+const isCompactViewport = window.matchMedia('(max-width: 620px)').matches
+const previewScale = isCompactViewport ? 0.7 : 0.74
+const canvasWidth = Math.round(exportWidth * previewScale)
+const canvasHeight = Math.round(exportHeight * previewScale)
+const layerCacheBudget = (isCompactViewport ? 44 : 72) * 1024 * 1024
+const imageCacheLimit = isCompactViewport ? 12 : 24
 const imagePromises = new Map()
 const layerCache = new Map()
-const canvasWidth = 1301
-const canvasHeight = 1479
+let layerCacheBytes = 0
 let renderToken = 0
 let renderTimer = 0
 
 function loadImage(url) {
   if (!url) return Promise.reject(new Error('Missing image url'))
-  if (imagePromises.has(url)) return imagePromises.get(url)
+  if (imagePromises.has(url)) {
+    const cached = imagePromises.get(url)
+    imagePromises.delete(url)
+    imagePromises.set(url, cached)
+    return cached
+  }
 
   const promise = new Promise((resolve, reject) => {
     const image = new Image()
+    image.decoding = 'async'
     image.onload = () => resolve(image)
     image.onerror = () => reject(new Error(`Unable to load ${url}`))
     image.src = url
   })
 
+  if (imagePromises.size >= imageCacheLimit) {
+    imagePromises.delete(imagePromises.keys().next().value)
+  }
   imagePromises.set(url, promise)
+  promise.catch(() => {
+    if (imagePromises.get(url) === promise) imagePromises.delete(url)
+  })
   return promise
 }
 
@@ -215,20 +257,38 @@ function colorKey(kind, color) {
   return 'plain'
 }
 
-async function createLayer(spec) {
-  const cacheKey = `${spec.url}|${spec.kind}|${colorKey(spec.kind, spec.color)}`
-  if (layerCache.has(cacheKey)) return layerCache.get(cacheKey)
+function cacheLayer(cacheKey, canvas) {
+  const bytes = canvas.width * canvas.height * 4
+
+  while (layerCache.size && layerCacheBytes + bytes > layerCacheBudget) {
+    const oldestKey = layerCache.keys().next().value
+    layerCacheBytes -= layerCache.get(oldestKey).bytes
+    layerCache.delete(oldestKey)
+  }
+
+  layerCache.set(cacheKey, { canvas, bytes })
+  layerCacheBytes += bytes
+}
+
+async function createLayer(spec, width, height) {
+  const cacheKey = `${width}x${height}|${spec.url}|${spec.kind}|${colorKey(spec.kind, spec.color)}`
+  const cached = layerCache.get(cacheKey)
+  if (cached) {
+    layerCache.delete(cacheKey)
+    layerCache.set(cacheKey, cached)
+    return cached.canvas
+  }
 
   const image = await loadImage(spec.url)
   const canvas = document.createElement('canvas')
-  canvas.width = canvasWidth
-  canvas.height = canvasHeight
+  canvas.width = width
+  canvas.height = height
   const context = canvas.getContext('2d', { willReadFrequently: true })
-  context.clearRect(0, 0, canvasWidth, canvasHeight)
-  context.drawImage(image, 0, 0, canvasWidth, canvasHeight)
+  context.clearRect(0, 0, width, height)
+  context.drawImage(image, 0, 0, width, height)
 
   if (spec.kind !== 'plain') {
-    const imageData = context.getImageData(0, 0, canvasWidth, canvasHeight)
+    const imageData = context.getImageData(0, 0, width, height)
     if (spec.kind === 'hair') {
       recolorHair(imageData, spec.color, { stripWhiteEdge: spec.stripWhiteEdge === true })
     }
@@ -240,13 +300,12 @@ async function createLayer(spec) {
     context.putImageData(imageData, 0, 0)
   }
 
-  if (layerCache.size > 70) layerCache.clear()
-  layerCache.set(cacheKey, canvas)
+  cacheLayer(cacheKey, canvas)
   return canvas
 }
 
 function partTransform(key) {
-  const state = partState[key]
+  const state = selectedPartState.value[key]
   const applied = state.enabled || state.closeMode === 'keep'
   return applied
     ? {
@@ -260,9 +319,10 @@ function partTransform(key) {
 
 const activeLayers = computed(() => {
   const assets = activeAssets.value
-  const accessoryLayer = partState.shy.visible
+  const accessoryLayer = selectedPartState.value.shy.visible
     ? {
         url: assets.shy?.url,
+        previewUrl: assets.shy?.previewUrl,
         kind: 'blush',
         color: blush,
         ...partTransform('shy')
@@ -272,19 +332,38 @@ const activeLayers = computed(() => {
   return [
     {
       url: assets.behindhair?.url,
+      previewUrl: assets.behindhair?.previewUrl,
       kind: 'hair',
       color: hair,
       stripWhiteEdge: true,
       ...partTransform('behindhair')
     },
-    { url: clothes2.value?.url, kind: 'skin', color: skin },
-    { url: assets.head?.url, kind: 'skin', color: skin, ...partTransform('head') },
+    { url: clothes2.value?.url, previewUrl: clothes2.value?.previewUrl, kind: 'skin', color: skin },
+    {
+      url: assets.head?.url,
+      previewUrl: assets.head?.previewUrl,
+      kind: 'skin',
+      color: skin,
+      ...partTransform('head')
+    },
     accessoryLayer,
-    { url: clothes1.value?.url, kind: 'skin', color: skin },
-    { url: assets.mouths?.url, kind: 'plain', ...partTransform('mouths') },
-    { url: assets.noses?.url, kind: 'skin', color: skin, ...partTransform('noses') },
+    { url: clothes1.value?.url, previewUrl: clothes1.value?.previewUrl, kind: 'skin', color: skin },
+    {
+      url: assets.mouths?.url,
+      previewUrl: assets.mouths?.previewUrl,
+      kind: 'plain',
+      ...partTransform('mouths')
+    },
+    {
+      url: assets.noses?.url,
+      previewUrl: assets.noses?.previewUrl,
+      kind: 'skin',
+      color: skin,
+      ...partTransform('noses')
+    },
     {
       url: assets.eyebrow?.url,
+      previewUrl: assets.eyebrow?.previewUrl,
       kind: 'hair',
       color: hair,
       stripWhiteEdge: true,
@@ -292,6 +371,7 @@ const activeLayers = computed(() => {
     },
     {
       url: assets.fonthair?.url,
+      previewUrl: assets.fonthair?.previewUrl,
       kind: 'hair',
       color: hair,
       stripWhiteEdge: true,
@@ -299,6 +379,7 @@ const activeLayers = computed(() => {
     },
     {
       url: assets.eyes?.url,
+      previewUrl: assets.eyes?.previewUrl,
       kind: 'eyes',
       color: eyes,
       whiteBlend: (skin.tone / 100) * 0.18,
@@ -307,43 +388,82 @@ const activeLayers = computed(() => {
   ].filter(Boolean)
 })
 
-async function renderScene() {
-  const token = ++renderToken
-  const canvas = canvasRef.value
-  if (!canvas) return
+function layerUrl(spec, useOriginal) {
+  return useOriginal ? spec.url : spec.previewUrl ?? spec.url
+}
 
+async function preloadLayerImages(specs, useOriginal) {
+  const urls = [
+    ...new Set(specs.map((spec) => layerUrl(spec, useOriginal)).filter(Boolean))
+  ]
+  await Promise.allSettled(urls.map((url) => loadImage(url)))
+}
+
+async function createSceneLayers(specs, width, height, isCancelled, useOriginal = false) {
+  await preloadLayerImages(specs, useOriginal)
   const layers = []
-  for (const spec of activeLayers.value) {
-    if (!spec.url) continue
-    layers.push({
-      canvas: await createLayer(spec),
-      offsetX: spec.offsetX ?? 0,
-      offsetY: spec.offsetY ?? 0,
-      scale: spec.scale ?? 1,
-      scaleX: spec.scaleX ?? 1
-    })
-    if (token !== renderToken) return
+  const offsetScaleX = width / exportWidth
+  const offsetScaleY = height / exportHeight
+
+  for (const spec of specs) {
+    const url = layerUrl(spec, useOriginal)
+    if (!url) continue
+    if (isCancelled()) return []
+
+    try {
+      layers.push({
+        canvas: await createLayer({ ...spec, url }, width, height),
+        offsetX: (spec.offsetX ?? 0) * offsetScaleX,
+        offsetY: (spec.offsetY ?? 0) * offsetScaleY,
+        scale: spec.scale ?? 1,
+        scaleX: spec.scaleX ?? 1
+      })
+    } catch {
+      // Keep the remaining scene visible if one optional asset fails to load.
+    }
   }
 
-  if (token !== renderToken) return
+  return layers
+}
+
+function drawScene(canvas, layers) {
   const context = canvas.getContext('2d')
-  context.clearRect(0, 0, canvasWidth, canvasHeight)
+  context.clearRect(0, 0, canvas.width, canvas.height)
   for (const layer of layers) {
     if (layer.scale === 1 && layer.scaleX === 1) {
       context.drawImage(layer.canvas, layer.offsetX, layer.offsetY)
       continue
     }
-    const width = canvasWidth * layer.scale * layer.scaleX
-    const height = canvasHeight * layer.scale
+    const width = canvas.width * layer.scale * layer.scaleX
+    const height = canvas.height * layer.scale
     context.drawImage(
       layer.canvas,
-      (canvasWidth - width) / 2 + layer.offsetX,
-      (canvasHeight - height) / 2 + layer.offsetY,
+      (canvas.width - width) / 2 + layer.offsetX,
+      (canvas.height - height) / 2 + layer.offsetY,
       width,
       height
     )
   }
-  drawMiniPreview()
+}
+
+async function renderScene(token) {
+  const canvas = canvasRef.value
+  if (!canvas) return
+
+  try {
+    const layers = await createSceneLayers(
+      [...activeLayers.value],
+      canvasWidth,
+      canvasHeight,
+      () => token !== renderToken
+    )
+
+    if (token !== renderToken) return
+    drawScene(canvas, layers)
+    drawMiniPreview()
+  } finally {
+    if (token === renderToken) isRendering.value = false
+  }
 }
 
 function drawMiniPreview() {
@@ -357,7 +477,9 @@ function drawMiniPreview() {
 
 function scheduleRender() {
   window.clearTimeout(renderTimer)
-  renderTimer = window.setTimeout(renderScene, 45)
+  const token = ++renderToken
+  isRendering.value = true
+  renderTimer = window.setTimeout(() => renderScene(token), 30)
 }
 
 function changePart(key, delta) {
@@ -367,20 +489,32 @@ function changePart(key, delta) {
 }
 
 function setPartEnabled(key, enabled) {
-  const state = partState[key]
+  const state = selectedPartState.value[key]
   state.enabled = enabled
   if (!enabled && state.closeMode === 'reset') resetPartAdjustment(key)
 }
 
 function resetPartAdjustment(key) {
-  partState[key].offsetX = 0
-  partState[key].offsetY = 0
-  partState[key].scale = 100
-  partState[key].spacing = 0
+  const state = selectedPartState.value[key]
+  state.offsetX = 0
+  state.offsetY = 0
+  state.scale = 100
+  state.spacing = 0
+}
+
+function resetAllPartAdjustments() {
+  for (const definition of partDefinitions) {
+    for (const state of partState[definition.key]) {
+      state.offsetX = 0
+      state.offsetY = 0
+      state.scale = 100
+      state.spacing = 0
+    }
+  }
 }
 
 function setPartVisible(key, visible) {
-  partState[key].visible = visible
+  selectedPartState.value[key].visible = visible
 }
 
 function signedOffset(value) {
@@ -396,9 +530,13 @@ function randomItem(items) {
 }
 
 function randomizeParts() {
+  resetAllPartAdjustments()
+  const nextSelection = {}
   for (const definition of singlePartDefinitions) {
-    selected[definition.key] = Math.floor(Math.random() * (assetBuckets[definition.key]?.length ?? 1))
+    const count = assetBuckets[definition.key]?.length ?? 0
+    nextSelection[definition.key] = count > 0 ? Math.floor(Math.random() * count) : 0
   }
+  Object.assign(selected, nextSelection)
 }
 
 function randomizeColors() {
@@ -433,15 +571,9 @@ function resetScene() {
     behindhair: 0
   })
   for (const definition of partDefinitions) {
-    Object.assign(partState[definition.key], {
-      enabled: definition.key !== 'shy',
-      visible: definition.key !== 'shy',
-      offsetX: 0,
-      offsetY: 0,
-      scale: 100,
-      spacing: 0,
-      closeMode: 'reset'
-    })
+    for (const state of partState[definition.key]) {
+      Object.assign(state, defaultPartState(definition.key))
+    }
   }
   Object.assign(hair, { h: 243, s: 100, v: 31 })
   Object.assign(eyes, { h: 2, s: 100, v: 100 })
@@ -450,16 +582,39 @@ function resetScene() {
 }
 
 function exportImage() {
-  const canvas = canvasRef.value
-  if (!canvas) return
-  canvas.toBlob((blob) => {
-    if (!blob) return
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = 'face-maker.png'
-    link.click()
-    URL.revokeObjectURL(link.href)
-  }, 'image/png')
+  if (isExporting.value) return
+  isExporting.value = true
+  const specs = activeLayers.value.map((spec) => ({
+    ...spec,
+    color: spec.color ? { ...spec.color } : undefined
+  }))
+
+  void (async () => {
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = exportWidth
+      canvas.height = exportHeight
+      const layers = await createSceneLayers(
+        specs,
+        exportWidth,
+        exportHeight,
+        () => false,
+        true
+      )
+      drawScene(canvas, layers)
+      const blob = await new Promise((resolve) => {
+        canvas.toBlob(resolve, 'image/png')
+      })
+      if (!blob) return
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = 'face-maker.png'
+      link.click()
+      URL.revokeObjectURL(link.href)
+    } finally {
+      isExporting.value = false
+    }
+  })()
 }
 
 watch(renderSignature, scheduleRender)
@@ -503,7 +658,14 @@ onBeforeUnmount(() => {
           <RotateCcw :size="17" />
           &#37325;&#32622;
         </button>
-        <button class="secondary-button" type="button" title="&#23548;&#20986; PNG" @click="exportImage">
+        <button
+          class="secondary-button"
+          type="button"
+          title="&#23548;&#20986; PNG"
+          :disabled="isExporting"
+          :aria-busy="isExporting"
+          @click="exportImage"
+        >
           <Download :size="17" />
           &#23548;&#20986;
         </button>
@@ -515,7 +677,10 @@ onBeforeUnmount(() => {
         <div class="preview-meta">
           <div>
             <span class="preview-label">&#23454;&#26102;&#30011;&#24067;</span>
-            <strong>{{ canvasWidth }} x {{ canvasHeight }}</strong>
+            <strong>
+              &#39044;&#35272; {{ canvasWidth }} x {{ canvasHeight }} /
+              &#23548;&#20986; {{ exportWidth }} x {{ exportHeight }}
+            </strong>
           </div>
           <div class="layer-tags" aria-label="&#22270;&#23618;&#39034;&#24207;">
             <span>&#30524;&#30555;</span>
@@ -531,7 +696,12 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="canvas-frame">
-          <canvas ref="canvasRef" :width="canvasWidth" :height="canvasHeight"></canvas>
+          <canvas
+            ref="canvasRef"
+            :width="canvasWidth"
+            :height="canvasHeight"
+            :aria-busy="isRendering"
+          ></canvas>
         </div>
       </section>
 
@@ -578,7 +748,7 @@ onBeforeUnmount(() => {
                 <label v-if="definition.key === 'shy'" class="part-use-toggle">
                   <input
                     type="checkbox"
-                    :checked="partState[definition.key].visible"
+                    :checked="selectedPartState[definition.key].visible"
                     :aria-label="`${definition.label}\u4f7f\u7528`"
                     @change="setPartVisible(definition.key, $event.target.checked)"
                   />
@@ -591,7 +761,7 @@ onBeforeUnmount(() => {
                   <label class="part-toggle">
                     <input
                       type="checkbox"
-                      :checked="partState[definition.key].enabled"
+                      :checked="selectedPartState[definition.key].enabled"
                       :aria-label="`${definition.label}\u542f\u7528`"
                       @change="setPartEnabled(definition.key, $event.target.checked)"
                     />
@@ -608,15 +778,15 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
 
-                <div v-if="partState[definition.key].enabled" class="adjust-controls">
+                <div v-if="selectedPartState[definition.key].enabled" class="adjust-controls">
                   <label class="adjust-field">
                     <span>
                       <Scaling :size="13" />
                       &#22823;&#23567;
                     </span>
-                    <output>{{ partState[definition.key].scale }}%</output>
+                    <output>{{ selectedPartState[definition.key].scale }}%</output>
                     <input
-                      v-model.number="partState[definition.key].scale"
+                      v-model.number="selectedPartState[definition.key].scale"
                       type="range"
                       min="50"
                       max="150"
@@ -629,9 +799,9 @@ onBeforeUnmount(() => {
                       <MoveHorizontal :size="13" />
                       &#24038;&#21491;&#20301;&#32622;
                     </span>
-                    <output>{{ signedOffset(partState[definition.key].offsetX) }}</output>
+                    <output>{{ signedOffset(selectedPartState[definition.key].offsetX) }}</output>
                     <input
-                      v-model.number="partState[definition.key].offsetX"
+                      v-model.number="selectedPartState[definition.key].offsetX"
                       type="range"
                       min="-260"
                       max="260"
@@ -644,9 +814,9 @@ onBeforeUnmount(() => {
                       <MoveVertical :size="13" />
                       &#19978;&#19979;&#20301;&#32622;
                     </span>
-                    <output>{{ signedOffset(partState[definition.key].offsetY) }}</output>
+                    <output>{{ signedOffset(selectedPartState[definition.key].offsetY) }}</output>
                     <input
-                      v-model.number="partState[definition.key].offsetY"
+                      v-model.number="selectedPartState[definition.key].offsetY"
                       type="range"
                       min="-220"
                       max="220"
@@ -659,9 +829,9 @@ onBeforeUnmount(() => {
                       <MoveHorizontal :size="13" />
                       &#38388;&#36317;
                     </span>
-                    <output>{{ signedPercent(partState[definition.key].spacing) }}</output>
+                    <output>{{ signedPercent(selectedPartState[definition.key].spacing) }}</output>
                     <input
-                      v-model.number="partState[definition.key].spacing"
+                      v-model.number="selectedPartState[definition.key].spacing"
                       type="range"
                       min="-35"
                       max="35"
@@ -673,7 +843,7 @@ onBeforeUnmount(() => {
                     <span>&#20851;&#38381;&#26102;</span>
                     <label>
                       <input
-                        v-model="partState[definition.key].closeMode"
+                        v-model="selectedPartState[definition.key].closeMode"
                         type="radio"
                         :name="`close-mode-${definition.key}`"
                         value="reset"
@@ -682,7 +852,7 @@ onBeforeUnmount(() => {
                     </label>
                     <label>
                       <input
-                        v-model="partState[definition.key].closeMode"
+                        v-model="selectedPartState[definition.key].closeMode"
                         type="radio"
                         :name="`close-mode-${definition.key}`"
                         value="keep"
@@ -692,12 +862,12 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
                 <div v-else class="part-closed">
-                  <span v-if="partState[definition.key].closeMode === 'keep'">
+                  <span v-if="selectedPartState[definition.key].closeMode === 'keep'">
                     &#35843;&#25972;&#27839;&#29992;
-                    {{ partState[definition.key].scale }}% ·
-                    X{{ signedOffset(partState[definition.key].offsetX) }} ·
-                    Y{{ signedOffset(partState[definition.key].offsetY) }} ·
-                    &#38388;&#36317;{{ signedPercent(partState[definition.key].spacing) }}
+                    {{ selectedPartState[definition.key].scale }}% ·
+                    X{{ signedOffset(selectedPartState[definition.key].offsetX) }} ·
+                    Y{{ signedOffset(selectedPartState[definition.key].offsetY) }} ·
+                    &#38388;&#36317;{{ signedPercent(selectedPartState[definition.key].spacing) }}
                   </span>
                   <span v-else>&#35843;&#25972;&#24050;&#36824;&#21407;</span>
                 </div>
