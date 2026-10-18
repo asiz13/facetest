@@ -490,7 +490,7 @@ async function createSceneLayers(
   useOriginal = false,
   onLayerReady
 ) {
-  await preloadLayerImages(specs, useOriginal)
+  void preloadLayerImages(specs, useOriginal)
   const layers = []
   const offsetScaleX = width / exportWidth
   const offsetScaleY = height / exportHeight

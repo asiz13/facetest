@@ -475,7 +475,7 @@ export function recolorEyes(imageData, target, options = {}) {
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
-    if (alpha < 8) continue
+    if (alpha < 32) continue
 
     const r = data[i]
     const g = data[i + 1]
@@ -490,7 +490,12 @@ export function recolorEyes(imageData, target, options = {}) {
         : 0
     const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
 
-    if (sourceValue < 0.16 && hueDistance(sourceHue, baseHue) > 45) continue
+    if (
+      sourceValue < 0.16 &&
+      (sourceSaturation < 0.16 || hueDistance(sourceHue, baseHue) > 45)
+    ) {
+      continue
+    }
 
     if (sourceSaturation < 0.16 && sourceValue > 0.72) {
       if (whiteBlend > 0) {
@@ -516,7 +521,7 @@ export function recolorEyes(imageData, target, options = {}) {
             0,
             1
           )
-        : targetSaturation * (0.3 + edgeWeight * 0.7)
+        : targetSaturation * edgeWeight
     writeHsvToRgb(data, i, outputHue, outputSaturation, outputValue)
   }
 }

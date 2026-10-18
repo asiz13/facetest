@@ -153,6 +153,28 @@ test('eye 16 keeps dark lash pixels unchanged while tinting dark iris shadows', 
   assert.ok(Math.abs(highlight.h - iris.h) > 30)
 })
 
+test('eye recoloring does not draw colored outlines over neutral edges', () => {
+  const imageData = makeImageData(
+    [220, 20, 45, 255],
+    [16, 15, 14, 255],
+    [120, 118, 118, 255],
+    [200, 30, 30, 16],
+    [40, 4, 20, 255]
+  )
+
+  recolorEyes(imageData, { h: 205, s: 85, v: 80 })
+
+  const darkOutline = pixelAt(imageData, 1)
+  const neutralEdge = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
+  const transparentEdge = pixelAt(imageData, 3)
+  const irisShadow = rgbToHsv(...pixelAt(imageData, 4).slice(0, 3))
+  assert.deepEqual(darkOutline, [16, 15, 14, 255])
+  assert.ok(neutralEdge.s < 0.12)
+  assert.deepEqual(transparentEdge, [200, 30, 30, 16])
+  assert.ok(irisShadow.s > 0.5)
+  assert.ok(irisShadow.v < 0.3)
+})
+
 test('eye brightness control changes the base while retaining its source shading', () => {
   const source = [
     [255, 0, 0, 255],
