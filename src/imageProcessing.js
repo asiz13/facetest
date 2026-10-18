@@ -102,6 +102,47 @@ function buildValueProfile(imageData, accept) {
   }
 }
 
+function buildLuminanceProfile(imageData, accept) {
+  const data = imageData.data
+  const luminanceHistogram = new Uint32Array(256)
+  let total = 0
+
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 8) continue
+    const r = data[i]
+    const g = data[i + 1]
+    const b = data[i + 2]
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const saturation = max === 0 ? 0 : (max - min) / max
+    if (!accept({ r, g, b, alpha: data[i + 3], max, min, saturation, value: max / 255 })) continue
+
+    const luminance = Math.round(r * 0.2126 + g * 0.7152 + b * 0.0722)
+    luminanceHistogram[clamp(luminance, 0, 255)] += 1
+    total += 1
+  }
+
+  if (total === 0) {
+    return { low: 0, base: 128, high: 255 }
+  }
+
+  const percentile = (ratio) => {
+    const target = total * ratio
+    let running = 0
+    for (let index = 0; index < luminanceHistogram.length; index += 1) {
+      running += luminanceHistogram[index]
+      if (running >= target) return index
+    }
+    return 255
+  }
+
+  return {
+    low: percentile(0.08),
+    base: percentile(0.5),
+    high: percentile(0.92)
+  }
+}
+
 function normalizedTargetValue(sourceValue, profile, targetValue, options = {}) {
   const base = profile.base
   if (sourceValue <= base) {
@@ -125,7 +166,7 @@ export function recolorHair(imageData, target, options = {}) {
   const data = imageData.data
   const targetSaturation = clamp(target.s / 100, 0, 1)
   const targetValue = clamp(target.v / 100, 0, 1)
-  const profile = buildValueProfile(imageData, ({ alpha, max, saturation }) => {
+  const profile = buildLuminanceProfile(imageData, ({ alpha, max, saturation }) => {
     if (alpha < 160) return false
     if (options.stripWhiteEdge && max > 238 && saturation < 0.08) return false
     return true
@@ -157,9 +198,11 @@ export function recolorHair(imageData, target, options = {}) {
       }
     }
 
-    const lightWeight = clamp((max - profile.low) / shadowSpan, 0, 1)
+    // Luminance keeps shaded strands that share the same brightest RGB channel.
+    const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
+    const lightWeight = clamp((luminance - profile.low) / shadowSpan, 0, 1)
     const shadowWeight = 1 - lightWeight
-    const brightnessRatio = clamp(max / Math.max(profile.base, 1), 0, 1)
+    const brightnessRatio = profile.base > 0 ? clamp(luminance / profile.base, 0, 1) : 0
     const output = hsvToRgb(
       target.h + shadowWeight,
       clamp(targetSaturation + shadowWeight * 0.17, 0, 1),
