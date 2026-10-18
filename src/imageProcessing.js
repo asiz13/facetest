@@ -105,6 +105,7 @@ function buildValueProfile(imageData, accept) {
 function buildLuminanceProfile(imageData, accept) {
   const data = imageData.data
   const luminanceHistogram = new Uint32Array(256)
+  const saturationTotals = new Float64Array(256)
   let total = 0
 
   for (let i = 0; i < data.length; i += 4) {
@@ -118,12 +119,14 @@ function buildLuminanceProfile(imageData, accept) {
     if (!accept({ r, g, b, alpha: data[i + 3], max, min, saturation, value: max / 255 })) continue
 
     const luminance = Math.round(r * 0.2126 + g * 0.7152 + b * 0.0722)
-    luminanceHistogram[clamp(luminance, 0, 255)] += 1
+    const bin = clamp(luminance, 0, 255)
+    luminanceHistogram[bin] += 1
+    saturationTotals[bin] += saturation
     total += 1
   }
 
   if (total === 0) {
-    return { low: 0, base: 128, high: 255 }
+    return { low: 0, base: 128, high: 255, baseSaturation: 0 }
   }
 
   const percentile = (ratio) => {
@@ -136,10 +139,16 @@ function buildLuminanceProfile(imageData, accept) {
     return 255
   }
 
+  let base = 0
+  for (let index = 1; index < luminanceHistogram.length; index += 1) {
+    if (luminanceHistogram[index] > luminanceHistogram[base]) base = index
+  }
+
   return {
-    low: percentile(0.08),
-    base: percentile(0.5),
-    high: percentile(0.92)
+    low: percentile(0.05),
+    base,
+    high: percentile(0.99),
+    baseSaturation: saturationTotals[base] / luminanceHistogram[base]
   }
 }
 
@@ -172,6 +181,7 @@ export function recolorHair(imageData, target, options = {}) {
     return true
   })
   const shadowSpan = Math.max(profile.base - profile.low, 1)
+  // Front hair 1 defines the shared 50% shadow and 20% highlight contrast.
   const shadowBrightnessRatio = 0.5
   const highlightBrightnessRatio = 1.2
 
@@ -202,16 +212,17 @@ export function recolorHair(imageData, target, options = {}) {
 
     // Luminance keeps shaded strands that share the same brightest RGB channel.
     const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
-    const lightWeight = clamp((luminance - profile.low) / shadowSpan, 0, 1)
-    const shadowWeight = 1 - lightWeight
+    const valueShadow = clamp((profile.base - luminance) / shadowSpan, 0, 1)
+    const saturationShadow = clamp((saturation - profile.baseSaturation) / 0.17, 0, 1)
+    const shadowWeight = Math.max(valueShadow, saturationShadow)
     const highlightWeight = clamp(
       (luminance - profile.base) / Math.max(255 - profile.base, 24),
       0,
       1
     )
     const brightnessRatio =
-      shadowBrightnessRatio +
-      (1 - shadowBrightnessRatio) * lightWeight +
+      1 -
+      (1 - shadowBrightnessRatio) * shadowWeight +
       (highlightBrightnessRatio - 1) * highlightWeight
     const outputValue = clamp(targetValue * brightnessRatio, 0, 1)
     const output = hsvToRgb(
