@@ -35,6 +35,22 @@ test('hair shadows stay colored and darker than the selected base hair color', (
   assert.ok(Math.max(...shadow.slice(0, 3)) < Math.max(...base.slice(0, 3)))
 })
 
+test('hair shadows use the target hue with a 17-point saturation increase', () => {
+  const imageData = makeImageData(
+    [40, 40, 40, 255],
+    [120, 120, 120, 255],
+    [220, 220, 220, 255]
+  )
+
+  recolorHair(imageData, { h: 210, s: 50, v: 50 })
+
+  const shadow = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
+  const base = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
+  assert.ok(Math.abs(shadow.h - 210) < 1)
+  assert.ok(Math.abs(shadow.s - 0.67) < 0.02)
+  assert.ok(Math.abs(base.s - 0.5) < 0.02)
+})
+
 test('hair styles with shadow pixels dominating the image keep their brighter base', () => {
   const imageData = makeImageData(
     ...Array.from({ length: 6 }, () => [90, 0, 0, 255]),
@@ -49,22 +65,54 @@ test('hair styles with shadow pixels dominating the image keep their brighter ba
   assert.ok(Math.max(...shadow.slice(0, 3)) < Math.max(...base.slice(0, 3)) * 0.75)
 })
 
-test('eye recoloring preserves the artwork hue differences and light-dark contrast', () => {
+test('eye recoloring uses one target hue and preserves smooth light-dark shading', () => {
   const imageData = makeImageData(
     [255, 0, 0, 255],
     [255, 255, 0, 255],
-    [128, 0, 0, 255]
+    [128, 0, 0, 255],
+    [255, 255, 255, 255],
+    [0, 0, 0, 255]
   )
 
-  recolorEyes(imageData, { h: 200, s: 100, v: 100 })
+  recolorEyes(imageData, { h: 200, s: 100, v: 80 })
 
-  const redHue = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3)).h
-  const yellowHue = rgbToHsv(...pixelAt(imageData, 1).slice(0, 3)).h
-  const brightValue = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3)).v
-  const darkValue = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3)).v
+  const brightIris = rgbToHsv(...pixelAt(imageData, 1).slice(0, 3))
+  const midIris = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
+  const darkIris = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
 
-  assert.ok(Math.abs(redHue - yellowHue) > 40)
-  assert.ok(brightValue - darkValue > 0.5)
+  for (const iris of [brightIris, midIris, darkIris]) {
+    assert.ok(Math.abs(iris.h - 200) < 1)
+  }
+  assert.ok(brightIris.v <= 0.81)
+  assert.ok(brightIris.v - darkIris.v > 0.25)
+  assert.deepEqual(pixelAt(imageData, 3).slice(0, 3), [255, 255, 255])
+  assert.deepEqual(pixelAt(imageData, 4).slice(0, 3), [0, 0, 0])
+})
+
+test('eye brightness control changes the base while retaining its source shading', () => {
+  const source = [
+    [255, 0, 0, 255],
+    [255, 255, 0, 255],
+    [128, 0, 0, 255]
+  ]
+  const dim = makeImageData(...source)
+  const bright = makeImageData(...source)
+
+  recolorEyes(dim, { h: 200, s: 85, v: 45 })
+  recolorEyes(bright, { h: 200, s: 85, v: 85 })
+
+  const dimBase = rgbToHsv(...pixelAt(dim, 1).slice(0, 3)).v
+  const brightBase = rgbToHsv(...pixelAt(bright, 1).slice(0, 3)).v
+  const dimContrast =
+    rgbToHsv(...pixelAt(dim, 1).slice(0, 3)).v -
+    rgbToHsv(...pixelAt(dim, 2).slice(0, 3)).v
+  const brightContrast =
+    rgbToHsv(...pixelAt(bright, 1).slice(0, 3)).v -
+    rgbToHsv(...pixelAt(bright, 2).slice(0, 3)).v
+
+  assert.ok(brightBase > dimBase + 0.2)
+  assert.ok(brightContrast > 0.2)
+  assert.ok(dimContrast > 0.1)
 })
 
 test('nose recoloring includes warm shadow pixels and keeps their depth', () => {

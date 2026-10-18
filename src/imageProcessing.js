@@ -287,8 +287,8 @@ export function recolorHair(imageData, target, options = {}) {
       (highlightBrightnessRatio - 1) * highlightWeight
     const outputValue = clamp(targetValue * brightnessRatio, 0, 1)
     const output = hsvToRgb(
-      target.h + shadowWeight * 12,
-      clamp(targetSaturation + shadowWeight * 0.24, 0, 1),
+      target.h,
+      clamp(targetSaturation + shadowWeight * 0.17, 0, 1),
       outputValue
     )
 
@@ -330,37 +330,11 @@ export function recolorEyes(imageData, target, options = {}) {
   const targetSaturation = clamp(target.s / 100, 0, 1)
   const targetValue = clamp(target.v / 100, 0, 1)
   const whiteBlend = clamp(options.whiteBlend ?? 0, 0, 0.22)
-  const profile = buildValueProfile(
+  const profile = buildLuminanceProfile(
     imageData,
-    ({ alpha, max, min, saturation }) =>
-      alpha >= 64 && max > 28 && saturation >= 0.16 && max !== min
+    ({ alpha, max, saturation }) =>
+      alpha >= 32 && max > 28 && saturation >= 0.08
   )
-  const hueWeights = new Float64Array(360)
-  let hueWeightTotal = 0
-  let baseHue = 0
-  let baseSaturation = 0
-
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 64) continue
-    const source = rgbToHsv(data[i], data[i + 1], data[i + 2])
-    if (source.v <= 28 / 255 || source.s < 0.16) continue
-    const weight = source.s * (data[i + 3] / 255)
-    const hue = Math.round(source.h) % 360
-    hueWeights[hue] += weight
-    hueWeightTotal += weight
-    baseSaturation += source.s * weight
-  }
-
-  if (hueWeightTotal > 0) {
-    for (let hue = 1; hue < hueWeights.length; hue += 1) {
-      if (hueWeights[hue] > hueWeights[baseHue]) baseHue = hue
-    }
-    baseSaturation /= hueWeightTotal
-  } else {
-    baseHue = target.h
-    baseSaturation = 1
-  }
-  const hueShift = ((target.h - baseHue + 540) % 360) - 180
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
@@ -373,8 +347,9 @@ export function recolorEyes(imageData, target, options = {}) {
     const min = Math.min(r, g, b)
     const saturation = max === 0 ? 0 : (max - min) / max
     const value = max / 255
+    const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
 
-    if (max === min || saturation < 0.16) {
+    if (saturation < 0.16 && value > 0.72) {
       if (whiteBlend > 0 && value > 0.72) {
         const blend = whiteBlend * value
         data[i] = Math.round(r * (1 - blend) + 255 * blend)
@@ -383,17 +358,18 @@ export function recolorEyes(imageData, target, options = {}) {
       }
       continue
     }
-    if (value < 0.11 || saturation < 0.2) continue
+    if (value < 0.11 && saturation < 0.2) continue
+    if (saturation < 0.025) continue
 
-    const outputValue = normalizedTargetValue(max, profile, targetValue, {
-      shadowFactor: 0.2,
-      shadowGamma: 0.82,
-      highlightFactor: 0.18
+    const outputValue = normalizedTargetValue(luminance, profile, targetValue, {
+      shadowFactor: 0.36,
+      shadowGamma: 0.95,
+      highlightFactor: 0.08
     })
-    const sourceHue = rgbToHsv(r, g, b)
+    const edgeWeight = clamp(saturation / 0.16, 0, 1)
     const output = hsvToRgb(
-      sourceHue.h + hueShift,
-      clamp(sourceHue.s * targetSaturation / Math.max(baseSaturation, 0.16), 0, 1),
+      target.h,
+      targetSaturation * edgeWeight,
       outputValue
     )
 

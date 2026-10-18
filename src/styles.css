@@ -104,6 +104,13 @@ input[type=range] {
   gap: 8px;
 }
 
+.export-status {
+  flex-basis: 100%;
+  color: #7f5b6b;
+  font-size: 11px;
+  text-align: right;
+}
+
 .primary-button,
 .secondary-button,
 .png-button {
@@ -952,6 +959,11 @@ input[type=range] {
     min-height: 34px;
     padding-inline: 6px;
     font-size: 12px;
+  }
+
+  .export-status {
+    grid-column: 1 / -1;
+    text-align: left;
   }
 
   .preview-meta {

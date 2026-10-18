@@ -226,6 +226,7 @@ const canvasRef = ref(null)
 const miniCanvasRef = ref(null)
 const isRendering = ref(true)
 const isExporting = ref(false)
+const exportMessage = ref('')
 const exportWidth = 1301
 const exportHeight = 1479
 const isCompactViewport = window.matchMedia('(max-width: 620px)').matches
@@ -240,6 +241,7 @@ const normalizedImageCache = new Map()
 let layerCacheBytes = 0
 let renderToken = 0
 let renderTimer = 0
+let hasRenderedInitialPreview = false
 
 function loadImage(url) {
   if (!url) return Promise.reject(new Error('Missing image url'))
@@ -458,7 +460,14 @@ async function preloadLayerImages(specs, useOriginal) {
   await Promise.allSettled(urls.map((url) => loadImage(url)))
 }
 
-async function createSceneLayers(specs, width, height, isCancelled, useOriginal = false) {
+async function createSceneLayers(
+  specs,
+  width,
+  height,
+  isCancelled,
+  useOriginal = false,
+  onLayerReady
+) {
   await preloadLayerImages(specs, useOriginal)
   const layers = []
   const offsetScaleX = width / exportWidth
@@ -477,6 +486,7 @@ async function createSceneLayers(specs, width, height, isCancelled, useOriginal 
         scale: spec.scale ?? 1,
         scaleX: spec.scaleX ?? 1
       })
+      onLayerReady?.(layers)
     } catch {
       if (useOriginal || !spec.previewUrl || spec.previewUrl === spec.url) continue
       try {
@@ -487,9 +497,14 @@ async function createSceneLayers(specs, width, height, isCancelled, useOriginal 
           scale: spec.scale ?? 1,
           scaleX: spec.scaleX ?? 1
         })
+        onLayerReady?.(layers)
       } catch {
         // Keep the remaining scene visible if one optional asset fails to load.
       }
+    }
+
+    if (onLayerReady) {
+      await new Promise((resolve) => window.requestAnimationFrame(resolve))
     }
   }
 
@@ -521,16 +536,24 @@ async function renderScene(token) {
   if (!canvas) return
 
   try {
+    const drawPartialScene = (layers) => {
+      if (hasRenderedInitialPreview || token !== renderToken) return
+      drawScene(canvas, layers)
+      drawMiniPreview()
+    }
     const layers = await createSceneLayers(
       [...activeLayers.value],
       canvasWidth,
       canvasHeight,
-      () => token !== renderToken
+      () => token !== renderToken,
+      false,
+      drawPartialScene
     )
 
     if (token !== renderToken) return
     drawScene(canvas, layers)
     drawMiniPreview()
+    hasRenderedInitialPreview = true
   } finally {
     if (token === renderToken) isRendering.value = false
   }
@@ -720,12 +743,14 @@ function resetScene() {
 function exportImage() {
   if (isExporting.value) return
   isExporting.value = true
+  exportMessage.value = ''
   const specs = activeLayers.value.map((spec) => ({
     ...spec,
     color: spec.color ? { ...spec.color } : undefined
   }))
 
   void (async () => {
+    let downloadUrl
     try {
       const canvas = document.createElement('canvas')
       canvas.width = exportWidth
@@ -738,16 +763,32 @@ function exportImage() {
         true
       )
       drawScene(canvas, layers)
-      const blob = await new Promise((resolve) => {
-        canvas.toBlob(resolve, 'image/png')
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob((result) => {
+          if (result) resolve(result)
+          else reject(new Error('PNG encoding failed'))
+        }, 'image/png')
       })
-      if (!blob) return
+      const objectUrl = URL.createObjectURL(blob)
+      downloadUrl = objectUrl
       const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob)
+      link.href = objectUrl
       link.download = 'face-maker.png'
-      link.click()
-      URL.revokeObjectURL(link.href)
+      link.style.display = 'none'
+      document.body.appendChild(link)
+      try {
+        link.click()
+      } finally {
+        link.remove()
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+      downloadUrl = undefined
+      exportMessage.value = '\u5df2\u5bfc\u51fa PNG'
+    } catch (error) {
+      console.error('PNG export failed', error)
+      exportMessage.value = '\u5bfc\u51fa\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5'
     } finally {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl)
       isExporting.value = false
     }
   })()
@@ -815,6 +856,9 @@ onBeforeUnmount(() => {
           <Download :size="17" />
           &#23548;&#20986;
         </button>
+        <span v-if="exportMessage" class="export-status" role="status">
+          {{ exportMessage }}
+        </span>
       </div>
     </header>
 
