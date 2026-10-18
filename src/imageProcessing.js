@@ -257,20 +257,14 @@ function buildLuminanceProfile(
   const valueHistogram = new Uint32Array(256)
   const saturationTotals = new Float64Array(256)
   let maxShadowMaskAlpha = 0
-  let shadowMaskPixelCount = 0
-  let overlappingShadowMaskPixelCount = 0
   let hueWeightTotal = 0
   let baseSaturationTotal = 0
   let total = 0
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
-    if (shadowMaskData && shadowMaskData[i + 3] >= 32) {
-      shadowMaskPixelCount += 1
-      if (alpha >= 32) {
-        overlappingShadowMaskPixelCount += 1
-        maxShadowMaskAlpha = Math.max(maxShadowMaskAlpha, shadowMaskData[i + 3])
-      }
+    if (shadowMaskData && alpha >= 32) {
+      maxShadowMaskAlpha = Math.max(maxShadowMaskAlpha, shadowMaskData[i + 3])
     }
     if (alpha < 8) continue
 
@@ -303,10 +297,10 @@ function buildLuminanceProfile(
       low: 0,
       base: 128,
       baseValue: 128,
+      lowValue: 0,
       high: 255,
       baseSaturation: 0,
       maxShadowMaskAlpha,
-      shadowMaskCoverage: 0,
       hueWeightTotal,
       baseSaturationTotal
     }
@@ -328,14 +322,11 @@ function buildLuminanceProfile(
   return {
     low: percentile(luminanceHistogram, 0.01),
     base,
+    lowValue: percentile(valueHistogram, 0.01),
     baseValue: percentile(valueHistogram, 0.7),
     high: percentile(luminanceHistogram, 0.99),
     baseSaturation: saturationTotals[base] / luminanceHistogram[base],
     maxShadowMaskAlpha,
-    shadowMaskCoverage:
-      shadowMaskPixelCount > 0
-        ? overlappingShadowMaskPixelCount / shadowMaskPixelCount
-        : 0,
     hueWeightTotal,
     baseSaturationTotal
   }
@@ -373,13 +364,7 @@ export function recolorHair(imageData, target, options = {}) {
   }, {
     shadowMaskData: hasShadowMask ? shadowMaskData : null
   })
-  const shadowSpan = Math.max(profile.base - profile.low, 1)
-  // Ignore masks that mostly miss the opaque hair and distinguish fallbacks from dark linework.
-  const hasReliableShadowMask =
-    hasShadowMask &&
-    profile.maxShadowMaskAlpha > 0 &&
-    profile.shadowMaskCoverage >= 0.35
-  // Keep detail from narrow shadow regions while excluding transparent edges.
+  const shadowSpan = Math.max(profile.baseValue - profile.lowValue, 1)
   const shadowBrightnessRatio = 0.44
   const highlightBrightnessRatio = 1.2
   const writeHairColor = createHsvWriter(data, target.h)
@@ -409,12 +394,11 @@ export function recolorHair(imageData, target, options = {}) {
       }
     }
 
-    // Luminance keeps shaded strands that share the same brightest RGB channel.
-    const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
-    const valueShadow = clamp((profile.base - luminance) / shadowSpan, 0, 1)
+    // HSV value keeps the same shading contrast across differently colored source art.
+    const valueShadow = clamp((profile.baseValue - max) / shadowSpan, 0, 1)
     const shadowWeight = valueShadow
     const highlightWeight = clamp(
-      (luminance - profile.base) / Math.max(255 - profile.base, 24),
+      (max - profile.baseValue) / Math.max(255 - profile.baseValue, 24),
       0,
       1
     )
@@ -424,13 +408,12 @@ export function recolorHair(imageData, target, options = {}) {
       (highlightBrightnessRatio - 1) * highlightWeight
     const outputValue = clamp(targetValue * brightnessRatio, 0, 1)
     const explicitShadowWeight =
-      hasReliableShadowMask
+      hasShadowMask && profile.maxShadowMaskAlpha > 0
         ? shadowMaskData[i + 3] / profile.maxShadowMaskAlpha
         : 0
     const inferredShadowWeight =
-      !hasReliableShadowMask &&
       options.inferShadowSaturation !== false &&
-      luminance < profile.base &&
+      max < profile.baseValue &&
       saturation >= 0.14 &&
       max > profile.baseValue * 0.6
         ? 1
@@ -479,6 +462,7 @@ export function recolorEyes(imageData, target, options = {}) {
   const targetSaturation = clamp(target.s / 100, 0, 1)
   const targetValue = clamp(target.v / 100, 0, 1)
   const whiteBlend = clamp(options.whiteBlend ?? 0, 0, 0.22)
+  const lineworkValueLimit = 0.4
   const hueWeights = new Float64Array(360)
   const profile = buildLuminanceProfile(
     imageData,
@@ -502,7 +486,7 @@ export function recolorEyes(imageData, target, options = {}) {
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
-    if (alpha < 32) continue
+    if (alpha === 0) continue
 
     const r = data[i]
     const g = data[i + 1]
@@ -512,15 +496,22 @@ export function recolorEyes(imageData, target, options = {}) {
     const sourceSaturation = max === 0 ? 0 : (max - min) / max
     const sourceValue = max / 255
     const sourceHue =
-      sourceValue < 0.16 || sourceSaturation >= 0.16
+      sourceValue < lineworkValueLimit || sourceSaturation >= 0.16
         ? hueFromRgb(r, g, b, max, min)
         : 0
     const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
 
-    if (
-      sourceValue < 0.16 &&
-      (sourceSaturation < 0.16 || hueDistance(sourceHue, baseHue) > 45)
-    ) {
+    if (alpha < 32) {
+      if (
+        sourceValue < lineworkValueLimit &&
+        sourceSaturation >= 0.16 &&
+        hueDistance(sourceHue, baseHue) > 45
+      ) {
+        const gray = Math.round(luminance)
+        data[i] = gray
+        data[i + 1] = gray
+        data[i + 2] = gray
+      }
       continue
     }
 
@@ -534,8 +525,18 @@ export function recolorEyes(imageData, target, options = {}) {
       continue
     }
 
+    if (sourceSaturation < 0.16) continue
+
+    if (sourceValue < lineworkValueLimit && hueDistance(sourceHue, baseHue) > 45) {
+      const gray = Math.round(luminance)
+      data[i] = gray
+      data[i + 1] = gray
+      data[i + 2] = gray
+      continue
+    }
+
     const outputValue = clamp(
-      targetValue * (luminance / Math.max(profile.base, 1)),
+      targetValue * (sourceValue * 255 / Math.max(profile.baseValue, 1)),
       0,
       1
     )

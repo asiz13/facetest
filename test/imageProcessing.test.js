@@ -96,6 +96,42 @@ test('hair shadows get the same saturation boost regardless of depth, not on lin
   assert.ok(Math.abs(line.s - 0.5) < 0.02)
 })
 
+test('hair shading contrast is independent of the source hue', () => {
+  const redHair = makeImageData(
+    ...Array.from({ length: 7 }, () => [200, 35, 45, 255]),
+    ...Array.from({ length: 3 }, () => [130, 20, 30, 255])
+  )
+  const blueHair = makeImageData(
+    ...Array.from({ length: 7 }, () => [45, 35, 200, 255]),
+    ...Array.from({ length: 3 }, () => [30, 20, 130, 255])
+  )
+
+  recolorHair(redHair, { h: 330, s: 50, v: 75 })
+  recolorHair(blueHair, { h: 330, s: 50, v: 75 })
+
+  assert.deepEqual(pixelAt(redHair, 7), pixelAt(blueHair, 7))
+})
+
+test('partial shadow masks keep all shadow strands consistent without coloring linework', () => {
+  const imageData = makeImageData(
+    ...Array.from({ length: 6 }, () => [240, 150, 180, 255]),
+    [190, 70, 110, 255],
+    [190, 70, 110, 255],
+    [12, 10, 12, 255]
+  )
+
+  recolorHair(imageData, { h: 330, s: 50, v: 75 }, {
+    shadowMaskData: makeMaskData(0, 0, 0, 0, 0, 0, 152, 0, 0)
+  })
+
+  const firstShadow = rgbToHsv(...pixelAt(imageData, 6).slice(0, 3))
+  const secondShadow = rgbToHsv(...pixelAt(imageData, 7).slice(0, 3))
+  const line = rgbToHsv(...pixelAt(imageData, 8).slice(0, 3))
+  assert.ok(Math.abs(firstShadow.s - 0.67) < 0.02)
+  assert.ok(Math.abs(secondShadow.s - 0.67) < 0.02)
+  assert.ok(Math.abs(line.s - 0.5) < 0.02)
+})
+
 test('unmasked chromatic hair shadows get a uniform boost while near-black linework does not', () => {
   const imageData = makeImageData(
     [240, 150, 180, 255],
@@ -196,12 +232,13 @@ test('eye recoloring preserves distinct highlight hues and dark iris shadows', (
   assert.deepEqual(pixelAt(imageData, 4).slice(0, 3), [0, 0, 0])
 })
 
-test('eye 16 keeps dark lash pixels unchanged while tinting dark iris shadows', () => {
+test('eye 16 keeps dark lash pixels neutral while tinting dark iris shadows', () => {
   const imageData = makeImageData(
     [220, 20, 45, 255],
     [0, 23, 0, 255],
     [40, 4, 20, 255],
-    [255, 220, 25, 255]
+    [255, 220, 25, 255],
+    [23, 42, 21, 255]
   )
 
   recolorEyes(imageData, { h: 320, s: 85, v: 80 })
@@ -210,7 +247,13 @@ test('eye 16 keeps dark lash pixels unchanged while tinting dark iris shadows', 
   const lash = pixelAt(imageData, 1)
   const irisShadow = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
   const highlight = rgbToHsv(...pixelAt(imageData, 3).slice(0, 3))
-  assert.deepEqual(lash, [0, 23, 0, 255])
+  const antialiasedOutline = pixelAt(imageData, 4)
+  assert.ok(Math.abs(lash[0] - lash[1]) <= 1)
+  assert.ok(Math.abs(lash[1] - lash[2]) <= 1)
+  assert.ok(Math.max(...lash.slice(0, 3)) <= 24)
+  assert.ok(Math.abs(antialiasedOutline[0] - antialiasedOutline[1]) <= 1)
+  assert.ok(Math.abs(antialiasedOutline[1] - antialiasedOutline[2]) <= 1)
+  assert.ok(Math.max(...antialiasedOutline.slice(0, 3)) < 50)
   assert.ok(irisShadow.v < iris.v * 0.5)
   assert.ok(irisShadow.s > 0.5)
   assert.ok(Math.abs(highlight.h - iris.h) > 30)
@@ -222,7 +265,8 @@ test('eye recoloring does not draw colored outlines over neutral edges', () => {
     [16, 15, 14, 255],
     [120, 118, 118, 255],
     [200, 30, 30, 16],
-    [40, 4, 20, 255]
+    [40, 4, 20, 255],
+    [23, 42, 21, 16]
   )
 
   recolorEyes(imageData, { h: 205, s: 85, v: 80 })
@@ -231,11 +275,15 @@ test('eye recoloring does not draw colored outlines over neutral edges', () => {
   const neutralEdge = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
   const transparentEdge = pixelAt(imageData, 3)
   const irisShadow = rgbToHsv(...pixelAt(imageData, 4).slice(0, 3))
+  const transparentOutline = pixelAt(imageData, 5)
   assert.deepEqual(darkOutline, [16, 15, 14, 255])
   assert.ok(neutralEdge.s < 0.12)
   assert.deepEqual(transparentEdge, [200, 30, 30, 16])
   assert.ok(irisShadow.s > 0.5)
   assert.ok(irisShadow.v < 0.3)
+  assert.ok(Math.abs(transparentOutline[0] - transparentOutline[1]) <= 1)
+  assert.ok(Math.abs(transparentOutline[1] - transparentOutline[2]) <= 1)
+  assert.equal(transparentOutline[3], 16)
 })
 
 test('eye brightness control changes the base while retaining its source shading', () => {
