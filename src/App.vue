@@ -55,12 +55,13 @@ for (const [path, url] of Object.entries(assetModules)) {
   if (!assetBuckets[folder]) assetBuckets[folder] = []
 
   const numeric = file.match(/\d+/)
+  const isJpeg = /\.(?:jpe?g)$/i.test(file)
   assetBuckets[folder].push({
     file,
     url,
-    removeWhiteBackground: /\.(?:jpe?g)$/i.test(file),
-    previewUrl: /\.(?:png)$/i.test(file)
-      ? `${import.meta.env.BASE_URL}previews-webp/${file.replace(/\.[^.]+$/, '.webp')}`
+    removeWhiteBackground: isJpeg,
+    previewUrl: /\.(?:png|jpe?g)$/i.test(file)
+      ? `${import.meta.env.BASE_URL}previews-webp/${file.replace(/\.[^.]+$/, isJpeg ? '-jpg.webp' : '.webp')}`
       : null,
     order: numeric ? Number(numeric[0]) : Number.MAX_SAFE_INTEGER
   })
@@ -83,7 +84,7 @@ const selected = reactive({
 
 function defaultPartState(key) {
   return {
-    enabled: true,
+    enabled: false,
     visible: key === 'shy',
     offsetX: 0,
     offsetY: 0,
@@ -228,7 +229,7 @@ const isExporting = ref(false)
 const exportWidth = 1301
 const exportHeight = 1479
 const isCompactViewport = window.matchMedia('(max-width: 620px)').matches
-const previewScale = isCompactViewport ? 0.7 : 0.74
+const previewScale = isCompactViewport ? 0.48 : 0.74
 const canvasWidth = Math.round(exportWidth * previewScale)
 const canvasHeight = Math.round(exportHeight * previewScale)
 const layerCacheBudget = (isCompactViewport ? 44 : 72) * 1024 * 1024
