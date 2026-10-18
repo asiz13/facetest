@@ -472,6 +472,33 @@ input[type=range] {
   height: 16px;
 }
 
+.adjust-nudge {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: -2px;
+}
+
+.adjust-nudge button {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  place-items: center;
+  color: #805568;
+  border: 1px solid #edc9d8;
+  border-radius: 5px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.adjust-nudge button:hover {
+  color: #b63769;
+  border-color: #d77d9f;
+  background: #fff5fa;
+}
+
 .close-policy {
   display: grid;
   grid-template-columns: auto 1fr 1fr;

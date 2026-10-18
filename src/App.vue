@@ -1,6 +1,10 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   ChevronLeft,
   ChevronRight,
   Dices,
@@ -12,12 +16,21 @@ import {
   RotateCcw,
   ScanFace,
   Scaling,
-  Sparkles
+  Sparkles,
+  Undo2
 } from 'lucide-vue-next'
-import { hsvToRgb, recolorBlush, recolorEyes, recolorHair, recolorSkin } from './imageProcessing'
+import {
+  hsvToRgb,
+  recolorBlush,
+  recolorEyes,
+  recolorHair,
+  recolorNose,
+  recolorSkin,
+  removeWhiteBackdrop
+} from './imageProcessing'
 
 const assetModules = import.meta.glob(
-  '../{behindhair,clothes,eyebrow,eyes,fonthair,head,mouths,noses,shy}/*.{png,PNG}',
+  '../{behindhair,clothes,eyebrow,eyes,fonthair,head,mouths,noses,shy}/*.{png,PNG,jpg,JPG,jpeg,JPEG}',
   { eager: true, query: '?url', import: 'default' }
 )
 
@@ -25,7 +38,7 @@ const partDefinitions = [
   { key: 'fonthair', label: '\u524d\u53d1', kind: 'hair' },
   { key: 'eyebrow', label: '\u7709\u6bdb', kind: 'hair' },
   { key: 'eyes', label: '\u773c\u775b', kind: 'eyes' },
-  { key: 'noses', label: '\u9f3b\u5b50', kind: 'skin' },
+  { key: 'noses', label: '\u9f3b\u5b50', kind: 'nose' },
   { key: 'mouths', label: '\u5634\u578b', kind: 'plain' },
   { key: 'shy', label: '\u9762\u9970', kind: 'blush' },
   { key: 'head', label: '\u8138\u578b', kind: 'skin' },
@@ -45,7 +58,10 @@ for (const [path, url] of Object.entries(assetModules)) {
   assetBuckets[folder].push({
     file,
     url,
-    previewUrl: `${import.meta.env.BASE_URL}previews-webp/${file.replace(/\.[^.]+$/, '.webp')}`,
+    removeWhiteBackground: /\.(?:jpe?g)$/i.test(file),
+    previewUrl: /\.(?:png)$/i.test(file)
+      ? `${import.meta.env.BASE_URL}previews-webp/${file.replace(/\.[^.]+$/, '.webp')}`
+      : null,
     order: numeric ? Number(numeric[0]) : Number.MAX_SAFE_INTEGER
   })
 }
@@ -68,7 +84,7 @@ const selected = reactive({
 function defaultPartState(key) {
   return {
     enabled: true,
-    visible: key !== 'shy',
+    visible: key === 'shy',
     offsetX: 0,
     offsetY: 0,
     scale: 100,
@@ -111,6 +127,7 @@ const eyes = reactive({ h: 2, s: 100, v: 100 })
 const blush = reactive({ h: 342, s: 48, v: 88 })
 const skin = reactive({ tone: 0, h: 30, s: 9, v: 100, r: 255, g: 243, b: 231 })
 const colorTab = ref('hair')
+const randomHistory = ref([])
 
 const skinScaleMarks = [0, 25, 50, 75, 100]
 const hairPalettes = [
@@ -218,6 +235,7 @@ const layerCacheBudget = (isCompactViewport ? 44 : 72) * 1024 * 1024
 const imageCacheLimit = isCompactViewport ? 12 : 24
 const imagePromises = new Map()
 const layerCache = new Map()
+const normalizedImageCache = new Map()
 let layerCacheBytes = 0
 let renderToken = 0
 let renderTimer = 0
@@ -253,7 +271,9 @@ function colorKey(kind, color) {
   if (kind === 'hair') return `${color.h}-${color.s}-${color.v}`
   if (kind === 'eyes') return `${color.h}-${color.s}-${color.v}`
   if (kind === 'blush') return `${color.h}-${color.s}-${color.v}`
-  if (kind === 'skin') return `${color.tone}-${color.h}-${color.s}-${color.v}`
+  if (kind === 'skin' || kind === 'nose') {
+    return `${color.tone}-${color.h}-${color.s}-${color.v}`
+  }
   return 'plain'
 }
 
@@ -268,6 +288,31 @@ function cacheLayer(cacheKey, canvas) {
 
   layerCache.set(cacheKey, { canvas, bytes })
   layerCacheBytes += bytes
+}
+
+function normalizedSource(image, url, width, height) {
+  const cacheKey = `${width}x${height}|${url}`
+  const cached = normalizedImageCache.get(cacheKey)
+  if (cached) {
+    normalizedImageCache.delete(cacheKey)
+    normalizedImageCache.set(cacheKey, cached)
+    return cached
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  context.drawImage(image, 0, 0, width, height)
+  const imageData = context.getImageData(0, 0, width, height)
+  removeWhiteBackdrop(imageData)
+  context.putImageData(imageData, 0, 0)
+
+  normalizedImageCache.set(cacheKey, canvas)
+  while (normalizedImageCache.size > 2) {
+    normalizedImageCache.delete(normalizedImageCache.keys().next().value)
+  }
+  return canvas
 }
 
 async function createLayer(spec, width, height) {
@@ -285,7 +330,12 @@ async function createLayer(spec, width, height) {
   canvas.height = height
   const context = canvas.getContext('2d', { willReadFrequently: true })
   context.clearRect(0, 0, width, height)
-  context.drawImage(image, 0, 0, width, height)
+  const removeBackground =
+    spec.removeWhiteBackground ?? /\.(?:jpe?g)(?:[?#]|$)/i.test(spec.url)
+  const source = removeBackground
+    ? normalizedSource(image, spec.url, width, height)
+    : image
+  context.drawImage(source, 0, 0, width, height)
 
   if (spec.kind !== 'plain') {
     const imageData = context.getImageData(0, 0, width, height)
@@ -296,6 +346,7 @@ async function createLayer(spec, width, height) {
       recolorEyes(imageData, spec.color, { whiteBlend: spec.whiteBlend ?? 0 })
     }
     if (spec.kind === 'blush') recolorBlush(imageData, spec.color)
+    if (spec.kind === 'nose') recolorNose(imageData, spec.color)
     if (spec.kind === 'skin') recolorSkin(imageData, spec.color)
     context.putImageData(imageData, 0, 0)
   }
@@ -304,8 +355,8 @@ async function createLayer(spec, width, height) {
   return canvas
 }
 
-function partTransform(key) {
-  const state = selectedPartState.value[key]
+function partTransform(key, index = selected[key]) {
+  const state = partState[key]?.[index] ?? defaultPartState(key)
   const applied = state.enabled || state.closeMode === 'keep'
   return applied
     ? {
@@ -319,15 +370,19 @@ function partTransform(key) {
 
 const activeLayers = computed(() => {
   const assets = activeAssets.value
-  const accessoryLayer = selectedPartState.value.shy.visible
-    ? {
-        url: assets.shy?.url,
-        previewUrl: assets.shy?.previewUrl,
-        kind: 'blush',
-        color: blush,
-        ...partTransform('shy')
-      }
-    : null
+  const accessoryLayers = (assetBuckets.shy ?? [])
+    .map((asset, index) =>
+      partState.shy[index]?.visible
+        ? {
+            url: asset.url,
+            previewUrl: asset.previewUrl,
+            kind: 'blush',
+            color: blush,
+            ...partTransform('shy', index)
+          }
+        : null
+    )
+    .filter(Boolean)
 
   return [
     {
@@ -335,6 +390,7 @@ const activeLayers = computed(() => {
       previewUrl: assets.behindhair?.previewUrl,
       kind: 'hair',
       color: hair,
+      removeWhiteBackground: assets.behindhair?.removeWhiteBackground,
       stripWhiteEdge: true,
       ...partTransform('behindhair')
     },
@@ -346,7 +402,7 @@ const activeLayers = computed(() => {
       color: skin,
       ...partTransform('head')
     },
-    accessoryLayer,
+    ...accessoryLayers,
     { url: clothes1.value?.url, previewUrl: clothes1.value?.previewUrl, kind: 'skin', color: skin },
     {
       url: assets.mouths?.url,
@@ -357,7 +413,7 @@ const activeLayers = computed(() => {
     {
       url: assets.noses?.url,
       previewUrl: assets.noses?.previewUrl,
-      kind: 'skin',
+      kind: 'nose',
       color: skin,
       ...partTransform('noses')
     },
@@ -366,6 +422,7 @@ const activeLayers = computed(() => {
       previewUrl: assets.eyebrow?.previewUrl,
       kind: 'hair',
       color: hair,
+      removeWhiteBackground: assets.eyebrow?.removeWhiteBackground,
       stripWhiteEdge: true,
       ...partTransform('eyebrow')
     },
@@ -374,6 +431,7 @@ const activeLayers = computed(() => {
       previewUrl: assets.fonthair?.previewUrl,
       kind: 'hair',
       color: hair,
+      removeWhiteBackground: assets.fonthair?.removeWhiteBackground,
       stripWhiteEdge: true,
       ...partTransform('fonthair')
     },
@@ -419,7 +477,18 @@ async function createSceneLayers(specs, width, height, isCancelled, useOriginal 
         scaleX: spec.scaleX ?? 1
       })
     } catch {
-      // Keep the remaining scene visible if one optional asset fails to load.
+      if (useOriginal || !spec.previewUrl || spec.previewUrl === spec.url) continue
+      try {
+        layers.push({
+          canvas: await createLayer({ ...spec, url: spec.url }, width, height),
+          offsetX: (spec.offsetX ?? 0) * offsetScaleX,
+          offsetY: (spec.offsetY ?? 0) * offsetScaleY,
+          scale: spec.scale ?? 1,
+          scaleX: spec.scaleX ?? 1
+        })
+      } catch {
+        // Keep the remaining scene visible if one optional asset fails to load.
+      }
     }
   }
 
@@ -513,8 +582,20 @@ function resetAllPartAdjustments() {
   }
 }
 
-function setPartVisible(key, visible) {
-  selectedPartState.value[key].visible = visible
+function setPartVisible(key, index, visible) {
+  const state = partState[key]?.[index]
+  if (state) state.visible = visible
+}
+
+function nudgePart(key, field, delta) {
+  const limits =
+    field === 'offsetX'
+      ? [-260, 260]
+      : field === 'offsetY'
+        ? [-220, 220]
+        : [-35, 35]
+  const state = selectedPartState.value[key]
+  state[field] = clampNumber(state[field] + delta, limits[0], limits[1])
 }
 
 function signedOffset(value) {
@@ -529,7 +610,45 @@ function randomItem(items) {
   return items[Math.floor(Math.random() * items.length)]
 }
 
-function randomizeParts() {
+function captureScene() {
+  return {
+    selected: { ...selected },
+    parts: Object.fromEntries(
+      partDefinitions.map((definition) => [
+        definition.key,
+        partState[definition.key].map((state) => ({ ...state }))
+      ])
+    ),
+    hair: { ...hair },
+    eyes: { ...eyes },
+    blush: { ...blush },
+    skin: { ...skin }
+  }
+}
+
+function recordRandomHistory() {
+  randomHistory.value = [...randomHistory.value.slice(-19), captureScene()]
+}
+
+function restoreScene(snapshot) {
+  Object.assign(selected, snapshot.selected)
+  for (const definition of partDefinitions) {
+    partState[definition.key].forEach((state, index) => {
+      Object.assign(state, snapshot.parts[definition.key][index])
+    })
+  }
+  Object.assign(hair, snapshot.hair)
+  Object.assign(eyes, snapshot.eyes)
+  Object.assign(blush, snapshot.blush)
+  Object.assign(skin, snapshot.skin)
+}
+
+function undoRandomization() {
+  const snapshot = randomHistory.value.pop()
+  if (snapshot) restoreScene(snapshot)
+}
+
+function applyRandomParts() {
   resetAllPartAdjustments()
   const nextSelection = {}
   for (const definition of singlePartDefinitions) {
@@ -537,9 +656,18 @@ function randomizeParts() {
     nextSelection[definition.key] = count > 0 ? Math.floor(Math.random() * count) : 0
   }
   Object.assign(selected, nextSelection)
+  for (const state of partState.shy) state.visible = false
+  if (partState.shy.length) {
+    partState.shy[selected.shy].visible = true
+  }
 }
 
-function randomizeColors() {
+function randomizeParts() {
+  recordRandomHistory()
+  applyRandomParts()
+}
+
+function applyRandomColors() {
   const nextHair = randomItem(hairPalettes)
   Object.assign(hair, nextHair)
 
@@ -554,12 +682,19 @@ function randomizeColors() {
   setSkinTone(Math.round(Math.random() * 100))
 }
 
+function randomizeColors() {
+  recordRandomHistory()
+  applyRandomColors()
+}
+
 function randomizeScene() {
-  randomizeParts()
-  randomizeColors()
+  recordRandomHistory()
+  applyRandomParts()
+  applyRandomColors()
 }
 
 function resetScene() {
+  randomHistory.value = []
   Object.assign(selected, {
     fonthair: 0,
     eyebrow: 0,
@@ -645,6 +780,16 @@ onBeforeUnmount(() => {
         <button class="primary-button" type="button" title="&#38543;&#26426;&#21305;&#37197;" @click="randomizeScene">
           <Dices :size="17" />
           &#20840;&#37096;&#38543;&#26426;
+        </button>
+        <button
+          class="secondary-button"
+          type="button"
+          title="&#25764;&#38144;&#19978;&#19968;&#27425;&#38543;&#26426;"
+          :disabled="randomHistory.length === 0"
+          @click="undoRandomization"
+        >
+          <Undo2 :size="17" />
+          &#25764;&#38144;
         </button>
         <button class="secondary-button" type="button" title="&#38543;&#26426;&#39068;&#33394;" @click="randomizeColors">
           <Palette :size="17" />
@@ -745,14 +890,19 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <label v-if="definition.key === 'shy'" class="part-use-toggle">
+                <label
+                  v-for="(asset, index) in definition.key === 'shy' ? assetBuckets.shy : []"
+                  :key="asset.file"
+                  class="part-use-toggle"
+                  :title="`${definition.label} ${String(index + 1).padStart(2, '0')}`"
+                >
                   <input
                     type="checkbox"
-                    :checked="selectedPartState[definition.key].visible"
-                    :aria-label="`${definition.label}\u4f7f\u7528`"
-                    @change="setPartVisible(definition.key, $event.target.checked)"
+                    :checked="partState.shy[index].visible"
+                    :aria-label="`${definition.label} ${index + 1}\u4f7f\u7528`"
+                    @change="setPartVisible(definition.key, index, $event.target.checked)"
                   />
-                  <span>&#20351;&#29992;</span>
+                  <span>{{ String(index + 1).padStart(2, '0') }}</span>
                 </label>
               </div>
 
@@ -779,7 +929,7 @@ onBeforeUnmount(() => {
                 </div>
 
                 <div v-if="selectedPartState[definition.key].enabled" class="adjust-controls">
-                  <label class="adjust-field">
+                  <div class="adjust-field">
                     <span>
                       <Scaling :size="13" />
                       &#22823;&#23567;
@@ -793,8 +943,8 @@ onBeforeUnmount(() => {
                       step="1"
                       :aria-label="`${definition.label}\u5927\u5c0f`"
                     />
-                  </label>
-                  <label class="adjust-field">
+                  </div>
+                  <div class="adjust-field">
                     <span>
                       <MoveHorizontal :size="13" />
                       &#24038;&#21491;&#20301;&#32622;
@@ -808,8 +958,22 @@ onBeforeUnmount(() => {
                       step="1"
                       :aria-label="`${definition.label}\u5de6\u53f3\u4f4d\u7f6e`"
                     />
-                  </label>
-                  <label class="adjust-field">
+                    <div class="adjust-nudge">
+                      <button
+                        type="button"
+                        :aria-label="`${definition.label}\u5411\u5de6\u5fae\u8c03`"
+                        title="&#21521;&#24038;&#24494;&#35843; 1px"
+                        @click="nudgePart(definition.key, 'offsetX', -1)"
+                      ><ArrowLeft :size="14" /></button>
+                      <button
+                        type="button"
+                        :aria-label="`${definition.label}\u5411\u53f3\u5fae\u8c03`"
+                        title="&#21521;&#21491;&#24494;&#35843; 1px"
+                        @click="nudgePart(definition.key, 'offsetX', 1)"
+                      ><ArrowRight :size="14" /></button>
+                    </div>
+                  </div>
+                  <div class="adjust-field">
                     <span>
                       <MoveVertical :size="13" />
                       &#19978;&#19979;&#20301;&#32622;
@@ -823,8 +987,22 @@ onBeforeUnmount(() => {
                       step="1"
                       :aria-label="`${definition.label}\u4e0a\u4e0b\u4f4d\u7f6e`"
                     />
-                  </label>
-                  <label class="adjust-field">
+                    <div class="adjust-nudge">
+                      <button
+                        type="button"
+                        :aria-label="`${definition.label}\u5411\u4e0a\u5fae\u8c03`"
+                        title="&#21521;&#19978;&#24494;&#35843; 1px"
+                        @click="nudgePart(definition.key, 'offsetY', -1)"
+                      ><ArrowUp :size="14" /></button>
+                      <button
+                        type="button"
+                        :aria-label="`${definition.label} Down`"
+                        title="&#21521;&#19979;&#24494;&#35843; 1px"
+                        @click="nudgePart(definition.key, 'offsetY', 1)"
+                      ><ArrowDown :size="14" /></button>
+                    </div>
+                  </div>
+                  <div class="adjust-field">
                     <span>
                       <MoveHorizontal :size="13" />
                       &#38388;&#36317;
@@ -838,7 +1016,7 @@ onBeforeUnmount(() => {
                       step="1"
                       :aria-label="`${definition.label}\u95f4\u8ddd`"
                     />
-                  </label>
+                  </div>
                   <div class="close-policy">
                     <span>&#20851;&#38381;&#26102;</span>
                     <label>
