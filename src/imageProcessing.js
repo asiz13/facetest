@@ -5,6 +5,83 @@ function hueDistance(first, second) {
   return Math.min(distance, 360 - distance)
 }
 
+function hueFromRgb(r, g, b, max, min) {
+  const delta = max - min
+  if (delta === 0) return 0
+
+  let hue
+  if (max === r) hue = 60 * (((g - b) / delta) % 6)
+  else if (max === g) hue = 60 * ((b - r) / delta + 2)
+  else hue = 60 * ((r - g) / delta + 4)
+
+  return hue < 0 ? hue + 360 : hue
+}
+
+function createHsvWriter(data, hue) {
+  const normalizedHue = ((hue % 360) + 360) % 360
+  const sector = Math.floor(normalizedHue / 60)
+  const sectorPosition = normalizedHue / 60 - sector
+  const xFactor = sector % 2 === 0 ? sectorPosition : 1 - sectorPosition
+  const [highChannel, middleChannel, lowChannel] = [
+    [0, 1, 2],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 1, 0],
+    [2, 0, 1],
+    [0, 2, 1]
+  ][sector]
+
+  return (index, saturation, value) => {
+    const chroma = value * saturation
+    const x = chroma * xFactor
+    const m = value - chroma
+    data[index + highChannel] = Math.round((chroma + m) * 255)
+    data[index + middleChannel] = Math.round((x + m) * 255)
+    data[index + lowChannel] = Math.round(m * 255)
+  }
+}
+
+function writeHsvToRgb(data, index, hue, saturation, value) {
+  const normalizedHue = ((hue % 360) + 360) % 360
+  const chroma = value * saturation
+  const x = chroma * (1 - Math.abs(((normalizedHue / 60) % 2) - 1))
+  const m = value - chroma
+  const sector = Math.floor(normalizedHue / 60) % 6
+  let r
+  let g
+  let b
+
+  if (sector === 0) {
+    r = chroma
+    g = x
+    b = 0
+  } else if (sector === 1) {
+    r = x
+    g = chroma
+    b = 0
+  } else if (sector === 2) {
+    r = 0
+    g = chroma
+    b = x
+  } else if (sector === 3) {
+    r = 0
+    g = x
+    b = chroma
+  } else if (sector === 4) {
+    r = x
+    g = 0
+    b = chroma
+  } else {
+    r = chroma
+    g = 0
+    b = x
+  }
+
+  data[index] = Math.round((r + m) * 255)
+  data[index + 1] = Math.round((g + m) * 255)
+  data[index + 2] = Math.round((b + m) * 255)
+}
+
 export function rgbToHsv(r, g, b) {
   const max = Math.max(r, g, b)
   const min = Math.min(r, g, b)
@@ -170,21 +247,41 @@ function buildValueProfile(imageData, accept) {
   }
 }
 
-function buildLuminanceProfile(imageData, accept) {
+function buildLuminanceProfile(
+  imageData,
+  accept,
+  { shadowMaskData = null, hueWeights = null } = {}
+) {
   const data = imageData.data
   const luminanceHistogram = new Uint32Array(256)
   const saturationTotals = new Float64Array(256)
+  let maxShadowMaskAlpha = 0
+  let hueWeightTotal = 0
+  let baseSaturationTotal = 0
   let total = 0
 
   for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 8) continue
+    const alpha = data[i + 3]
+    if (shadowMaskData && alpha >= 32) {
+      maxShadowMaskAlpha = Math.max(maxShadowMaskAlpha, shadowMaskData[i + 3])
+    }
+    if (alpha < 8) continue
+
     const r = data[i]
     const g = data[i + 1]
     const b = data[i + 2]
     const max = Math.max(r, g, b)
     const min = Math.min(r, g, b)
     const saturation = max === 0 ? 0 : (max - min) / max
-    if (!accept({ r, g, b, alpha: data[i + 3], max, min, saturation, value: max / 255 })) continue
+    if (!accept(alpha, max, min, saturation, max / 255, r, g, b)) continue
+
+    if (hueWeights && alpha >= 32 && max / 255 > 0.16 && saturation >= 0.16) {
+      const weight = saturation * (alpha / 255)
+      const hue = Math.round(hueFromRgb(r, g, b, max, min)) % 360
+      hueWeights[hue] += weight
+      hueWeightTotal += weight
+      baseSaturationTotal += saturation * weight
+    }
 
     const luminance = Math.round(r * 0.2126 + g * 0.7152 + b * 0.0722)
     const bin = clamp(luminance, 0, 255)
@@ -194,7 +291,15 @@ function buildLuminanceProfile(imageData, accept) {
   }
 
   if (total === 0) {
-    return { low: 0, base: 128, high: 255, baseSaturation: 0 }
+    return {
+      low: 0,
+      base: 128,
+      high: 255,
+      baseSaturation: 0,
+      maxShadowMaskAlpha,
+      hueWeightTotal,
+      baseSaturationTotal
+    }
   }
 
   const percentile = (ratio) => {
@@ -214,7 +319,10 @@ function buildLuminanceProfile(imageData, accept) {
     low: percentile(0.01),
     base,
     high: percentile(0.99),
-    baseSaturation: saturationTotals[base] / luminanceHistogram[base]
+    baseSaturation: saturationTotals[base] / luminanceHistogram[base],
+    maxShadowMaskAlpha,
+    hueWeightTotal,
+    baseSaturationTotal
   }
 }
 
@@ -241,25 +349,20 @@ export function recolorHair(imageData, target, options = {}) {
   const data = imageData.data
   const targetSaturation = clamp(target.s / 100, 0, 1)
   const targetValue = clamp(target.v / 100, 0, 1)
-  const profile = buildLuminanceProfile(imageData, ({ alpha, max, saturation }) => {
+  const shadowMaskData = options.shadowMaskData?.data
+  const hasShadowMask = shadowMaskData?.length === data.length
+  const profile = buildLuminanceProfile(imageData, (alpha, max, _min, saturation) => {
     if (alpha < 160) return false
     if (options.stripWhiteEdge && max > 238 && saturation < 0.08) return false
     return true
+  }, {
+    shadowMaskData: hasShadowMask ? shadowMaskData : null
   })
   const shadowSpan = Math.max(profile.base - profile.low, 1)
   // Keep detail from narrow shadow regions while excluding transparent edges.
   const shadowBrightnessRatio = 0.44
   const highlightBrightnessRatio = 1.2
-  const shadowMaskData = options.shadowMaskData?.data
-  const hasShadowMask = shadowMaskData?.length === data.length
-  let maxShadowMaskAlpha = 0
-
-  if (hasShadowMask) {
-    for (let i = 0; i < shadowMaskData.length; i += 4) {
-      if (data[i + 3] < 32) continue
-      maxShadowMaskAlpha = Math.max(maxShadowMaskAlpha, shadowMaskData[i + 3])
-    }
-  }
+  const writeHairColor = createHsvWriter(data, target.h)
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
@@ -302,11 +405,11 @@ export function recolorHair(imageData, target, options = {}) {
       (highlightBrightnessRatio - 1) * highlightWeight
     const outputValue = clamp(targetValue * brightnessRatio, 0, 1)
     const explicitShadowWeight =
-      hasShadowMask && maxShadowMaskAlpha > 0
-        ? shadowMaskData[i + 3] / maxShadowMaskAlpha
+      hasShadowMask && profile.maxShadowMaskAlpha > 0
+        ? shadowMaskData[i + 3] / profile.maxShadowMaskAlpha
         : 0
-    const output = hsvToRgb(
-      target.h,
+    writeHairColor(
+      i,
       clamp(
         targetSaturation + explicitShadowWeight * 0.17,
         0,
@@ -314,10 +417,6 @@ export function recolorHair(imageData, target, options = {}) {
       ),
       outputValue
     )
-
-    data[i] = output.r
-    data[i + 1] = output.g
-    data[i + 2] = output.b
   }
 }
 
@@ -353,33 +452,21 @@ export function recolorEyes(imageData, target, options = {}) {
   const targetSaturation = clamp(target.s / 100, 0, 1)
   const targetValue = clamp(target.v / 100, 0, 1)
   const whiteBlend = clamp(options.whiteBlend ?? 0, 0, 0.22)
+  const hueWeights = new Float64Array(360)
   const profile = buildLuminanceProfile(
     imageData,
-    ({ alpha, max, saturation }) =>
-      alpha >= 32 && max > 28 && saturation >= 0.08
+    (alpha, max, _min, saturation) =>
+      alpha >= 32 && max > 28 && saturation >= 0.08,
+    { hueWeights }
   )
-  const hueWeights = new Float64Array(360)
-  let hueWeightTotal = 0
   let baseHue = 0
-  let baseSaturation = 0
+  let baseSaturation = profile.baseSaturationTotal
 
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 32) continue
-    const source = rgbToHsv(data[i], data[i + 1], data[i + 2])
-    if (source.v <= 0.16 || source.s < 0.16) continue
-
-    const weight = source.s * (data[i + 3] / 255)
-    const hue = Math.round(source.h) % 360
-    hueWeights[hue] += weight
-    hueWeightTotal += weight
-    baseSaturation += source.s * weight
-  }
-
-  if (hueWeightTotal > 0) {
+  if (profile.hueWeightTotal > 0) {
     for (let hue = 1; hue < hueWeights.length; hue += 1) {
       if (hueWeights[hue] > hueWeights[baseHue]) baseHue = hue
     }
-    baseSaturation /= hueWeightTotal
+    baseSaturation /= profile.hueWeightTotal
   } else {
     baseHue = target.h
     baseSaturation = 1
@@ -393,14 +480,21 @@ export function recolorEyes(imageData, target, options = {}) {
     const r = data[i]
     const g = data[i + 1]
     const b = data[i + 2]
-    const source = rgbToHsv(r, g, b)
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const sourceSaturation = max === 0 ? 0 : (max - min) / max
+    const sourceValue = max / 255
+    const sourceHue =
+      sourceValue < 0.16 || sourceSaturation >= 0.16
+        ? hueFromRgb(r, g, b, max, min)
+        : 0
     const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
 
-    if (source.v < 0.16 && hueDistance(source.h, baseHue) > 45) continue
+    if (sourceValue < 0.16 && hueDistance(sourceHue, baseHue) > 45) continue
 
-    if (source.s < 0.16 && source.v > 0.72) {
+    if (sourceSaturation < 0.16 && sourceValue > 0.72) {
       if (whiteBlend > 0) {
-        const blend = whiteBlend * source.v
+        const blend = whiteBlend * sourceValue
         data[i] = Math.round(r * (1 - blend) + 255 * blend)
         data[i + 1] = Math.round(g * (1 - blend) + 246 * blend)
         data[i + 2] = Math.round(b * (1 - blend) + 239 * blend)
@@ -413,25 +507,17 @@ export function recolorEyes(imageData, target, options = {}) {
       0,
       1
     )
-    const edgeWeight = clamp(source.s / 0.16, 0, 1)
-    const outputHue = source.s >= 0.16 ? source.h + hueShift : target.h
+    const edgeWeight = clamp(sourceSaturation / 0.16, 0, 1)
+    const outputHue = sourceSaturation >= 0.16 ? sourceHue + hueShift : target.h
     const outputSaturation =
-      source.s >= 0.16
+      sourceSaturation >= 0.16
         ? clamp(
-            source.s * targetSaturation / Math.max(baseSaturation, 0.16),
+            sourceSaturation * targetSaturation / Math.max(baseSaturation, 0.16),
             0,
             1
           )
         : targetSaturation * (0.3 + edgeWeight * 0.7)
-    const output = hsvToRgb(
-      outputHue,
-      outputSaturation,
-      outputValue
-    )
-
-    data[i] = output.r
-    data[i + 1] = output.g
-    data[i + 2] = output.b
+    writeHsvToRgb(data, i, outputHue, outputSaturation, outputValue)
   }
 }
 
