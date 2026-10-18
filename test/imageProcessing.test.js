@@ -35,6 +35,20 @@ test('hair shadows stay colored and darker than the selected base hair color', (
   assert.ok(Math.max(...shadow.slice(0, 3)) < Math.max(...base.slice(0, 3)))
 })
 
+test('hair styles with shadow pixels dominating the image keep their brighter base', () => {
+  const imageData = makeImageData(
+    ...Array.from({ length: 6 }, () => [90, 0, 0, 255]),
+    ...Array.from({ length: 4 }, () => [255, 0, 0, 255])
+  )
+
+  recolorHair(imageData, { h: 210, s: 70, v: 50 })
+
+  const shadow = pixelAt(imageData, 0)
+  const base = pixelAt(imageData, 6)
+  assert.notEqual(shadow[0], shadow[1])
+  assert.ok(Math.max(...shadow.slice(0, 3)) < Math.max(...base.slice(0, 3)) * 0.75)
+})
+
 test('eye recoloring preserves the artwork hue differences and light-dark contrast', () => {
   const imageData = makeImageData(
     [255, 0, 0, 255],

@@ -202,10 +202,8 @@ function buildLuminanceProfile(imageData, accept) {
     return 255
   }
 
-  let base = 0
-  for (let index = 1; index < luminanceHistogram.length; index += 1) {
-    if (luminanceHistogram[index] > luminanceHistogram[base]) base = index
-  }
+  // A higher percentile prevents shadow-heavy styles from defining their own base as a shadow.
+  const base = percentile(0.7)
 
   return {
     low: percentile(0.01),
