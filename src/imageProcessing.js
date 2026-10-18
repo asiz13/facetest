@@ -172,6 +172,7 @@ export function recolorHair(imageData, target, options = {}) {
     return true
   })
   const shadowSpan = Math.max(profile.base - profile.low, 1)
+  const shadowBrightnessRatio = 0.5
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
@@ -202,7 +203,7 @@ export function recolorHair(imageData, target, options = {}) {
     const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
     const lightWeight = clamp((luminance - profile.low) / shadowSpan, 0, 1)
     const shadowWeight = 1 - lightWeight
-    const brightnessRatio = profile.base > 0 ? clamp(luminance / profile.base, 0, 1) : 0
+    const brightnessRatio = shadowBrightnessRatio + (1 - shadowBrightnessRatio) * lightWeight
     const output = hsvToRgb(
       target.h + shadowWeight,
       clamp(targetSaturation + shadowWeight * 0.17, 0, 1),
