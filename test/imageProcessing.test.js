@@ -51,6 +51,20 @@ test('hair shadows use the target hue with a 17-point saturation increase', () =
   assert.ok(Math.abs(base.s - 0.5) < 0.02)
 })
 
+test('low-saturation hair still gets visibly tinted shadows', () => {
+  const imageData = makeImageData(
+    [40, 40, 40, 255],
+    [120, 120, 120, 255],
+    [220, 220, 220, 255]
+  )
+
+  recolorHair(imageData, { h: 330, s: 12, v: 75 })
+
+  const shadow = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
+  assert.ok(Math.abs(shadow.h - 330) < 1)
+  assert.ok(shadow.s >= 0.41)
+})
+
 test('hair styles with shadow pixels dominating the image keep their brighter base', () => {
   const imageData = makeImageData(
     ...Array.from({ length: 6 }, () => [90, 0, 0, 255]),
@@ -65,26 +79,25 @@ test('hair styles with shadow pixels dominating the image keep their brighter ba
   assert.ok(Math.max(...shadow.slice(0, 3)) < Math.max(...base.slice(0, 3)) * 0.75)
 })
 
-test('eye recoloring uses one target hue and preserves smooth light-dark shading', () => {
+test('eye recoloring preserves distinct highlight hues and dark iris shadows', () => {
   const imageData = makeImageData(
-    [255, 0, 0, 255],
-    [255, 255, 0, 255],
-    [128, 0, 0, 255],
+    [220, 20, 45, 255],
+    [255, 220, 25, 255],
+    [40, 4, 20, 255],
     [255, 255, 255, 255],
     [0, 0, 0, 255]
   )
 
-  recolorEyes(imageData, { h: 200, s: 100, v: 80 })
+  recolorEyes(imageData, { h: 320, s: 85, v: 80 })
 
-  const brightIris = rgbToHsv(...pixelAt(imageData, 1).slice(0, 3))
-  const midIris = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
-  const darkIris = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
+  const baseColor = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
+  const coloredHighlight = rgbToHsv(...pixelAt(imageData, 1).slice(0, 3))
+  const darkShadow = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
 
-  for (const iris of [brightIris, midIris, darkIris]) {
-    assert.ok(Math.abs(iris.h - 200) < 1)
-  }
-  assert.ok(brightIris.v <= 0.81)
-  assert.ok(brightIris.v - darkIris.v > 0.25)
+  assert.ok(Math.abs(baseColor.h - 320) < 8)
+  assert.ok(Math.abs(coloredHighlight.h - baseColor.h) > 30)
+  assert.ok(darkShadow.v < baseColor.v * 0.5)
+  assert.ok(darkShadow.s > 0.5)
   assert.deepEqual(pixelAt(imageData, 3).slice(0, 3), [255, 255, 255])
   assert.deepEqual(pixelAt(imageData, 4).slice(0, 3), [0, 0, 0])
 })
