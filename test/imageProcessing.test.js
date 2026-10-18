@@ -20,6 +20,14 @@ function pixelAt(imageData, index) {
   return Array.from(imageData.data.slice(index * 4, index * 4 + 4))
 }
 
+function makeMaskData(...alphas) {
+  return {
+    data: Uint8ClampedArray.from(alphas.flatMap((alpha) => [255, 255, 255, alpha])),
+    width: alphas.length,
+    height: 1
+  }
+}
+
 test('hair shadows stay colored and darker than the selected base hair color', () => {
   const imageData = makeImageData(
     [40, 40, 40, 255],
@@ -42,7 +50,9 @@ test('hair shadows use the target hue with a 17-point saturation increase', () =
     [220, 220, 220, 255]
   )
 
-  recolorHair(imageData, { h: 210, s: 50, v: 50 })
+  recolorHair(imageData, { h: 210, s: 50, v: 50 }, {
+    shadowMaskData: makeMaskData(152, 0, 0)
+  })
 
   const shadow = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
   const base = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
@@ -58,11 +68,32 @@ test('low-saturation hair still gets visibly tinted shadows', () => {
     [220, 220, 220, 255]
   )
 
-  recolorHair(imageData, { h: 330, s: 12, v: 75 })
+  recolorHair(imageData, { h: 330, s: 12, v: 75 }, {
+    shadowMaskData: makeMaskData(152, 0, 0)
+  })
 
   const shadow = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
   assert.ok(Math.abs(shadow.h - 330) < 1)
-  assert.ok(shadow.s >= 0.41)
+  assert.ok(Math.abs(shadow.s - 0.29) < 0.02)
+})
+
+test('hair shadows get the same saturation boost regardless of depth, not on linework', () => {
+  const imageData = makeImageData(
+    [40, 40, 40, 255],
+    [90, 90, 90, 255],
+    [40, 40, 40, 255],
+    [220, 220, 220, 255]
+  )
+  const shadowMaskData = makeMaskData(152, 152, 0, 0)
+
+  recolorHair(imageData, { h: 330, s: 50, v: 75 }, { shadowMaskData })
+
+  const deepShadow = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
+  const lightShadow = rgbToHsv(...pixelAt(imageData, 1).slice(0, 3))
+  const line = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
+  assert.ok(Math.abs(deepShadow.s - 0.67) < 0.02)
+  assert.ok(Math.abs(lightShadow.s - 0.67) < 0.02)
+  assert.ok(Math.abs(line.s - 0.5) < 0.02)
 })
 
 test('hair styles with shadow pixels dominating the image keep their brighter base', () => {
@@ -100,6 +131,26 @@ test('eye recoloring preserves distinct highlight hues and dark iris shadows', (
   assert.ok(darkShadow.s > 0.5)
   assert.deepEqual(pixelAt(imageData, 3).slice(0, 3), [255, 255, 255])
   assert.deepEqual(pixelAt(imageData, 4).slice(0, 3), [0, 0, 0])
+})
+
+test('eye 16 keeps dark lash pixels unchanged while tinting dark iris shadows', () => {
+  const imageData = makeImageData(
+    [220, 20, 45, 255],
+    [0, 23, 0, 255],
+    [40, 4, 20, 255],
+    [255, 220, 25, 255]
+  )
+
+  recolorEyes(imageData, { h: 320, s: 85, v: 80 })
+
+  const iris = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
+  const lash = pixelAt(imageData, 1)
+  const irisShadow = rgbToHsv(...pixelAt(imageData, 2).slice(0, 3))
+  const highlight = rgbToHsv(...pixelAt(imageData, 3).slice(0, 3))
+  assert.deepEqual(lash, [0, 23, 0, 255])
+  assert.ok(irisShadow.v < iris.v * 0.5)
+  assert.ok(irisShadow.s > 0.5)
+  assert.ok(Math.abs(highlight.h - iris.h) > 30)
 })
 
 test('eye brightness control changes the base while retaining its source shading', () => {

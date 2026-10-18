@@ -319,7 +319,13 @@ function normalizedSource(image, url, width, height) {
 }
 
 async function createLayer(spec, width, height) {
-  const cacheKey = `${width}x${height}|${spec.url}|${spec.kind}|${colorKey(spec.kind, spec.color)}`
+  const cacheKey = [
+    `${width}x${height}`,
+    spec.url,
+    spec.shadowMaskUrl ?? '',
+    spec.kind,
+    colorKey(spec.kind, spec.color)
+  ].join('|')
   const cached = layerCache.get(cacheKey)
   if (cached) {
     layerCache.delete(cacheKey)
@@ -327,7 +333,10 @@ async function createLayer(spec, width, height) {
     return cached.canvas
   }
 
-  const image = await loadImage(spec.url)
+  const [image, shadowMask] = await Promise.all([
+    loadImage(spec.url),
+    spec.shadowMaskUrl ? loadImage(spec.shadowMaskUrl).catch(() => null) : null
+  ])
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
@@ -343,7 +352,19 @@ async function createLayer(spec, width, height) {
   if (spec.kind !== 'plain') {
     const imageData = context.getImageData(0, 0, width, height)
     if (spec.kind === 'hair') {
-      recolorHair(imageData, spec.color, { stripWhiteEdge: spec.stripWhiteEdge === true })
+      let shadowMaskData
+      if (shadowMask) {
+        const maskCanvas = document.createElement('canvas')
+        maskCanvas.width = width
+        maskCanvas.height = height
+        const maskContext = maskCanvas.getContext('2d', { willReadFrequently: true })
+        maskContext.drawImage(shadowMask, 0, 0, width, height)
+        shadowMaskData = maskContext.getImageData(0, 0, width, height)
+      }
+      recolorHair(imageData, spec.color, {
+        stripWhiteEdge: spec.stripWhiteEdge === true,
+        shadowMaskData
+      })
     }
     if (spec.kind === 'eyes') {
       recolorEyes(imageData, spec.color, { whiteBlend: spec.whiteBlend ?? 0 })
@@ -434,6 +455,7 @@ const activeLayers = computed(() => {
       previewUrl: assets.fonthair?.previewUrl,
       kind: 'hair',
       color: hair,
+      shadowMaskUrl: `${import.meta.env.BASE_URL}hair-shadows/${String(selected.fonthair + 1).padStart(2, '0')}/shadow-mask.png`,
       removeWhiteBackground: assets.fonthair?.removeWhiteBackground,
       stripWhiteEdge: true,
       ...partTransform('fonthair')

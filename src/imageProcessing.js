@@ -1,5 +1,10 @@
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
+function hueDistance(first, second) {
+  const distance = Math.abs(((first - second) % 360 + 360) % 360)
+  return Math.min(distance, 360 - distance)
+}
+
 export function rgbToHsv(r, g, b) {
   const max = Math.max(r, g, b)
   const min = Math.min(r, g, b)
@@ -245,6 +250,16 @@ export function recolorHair(imageData, target, options = {}) {
   // Keep detail from narrow shadow regions while excluding transparent edges.
   const shadowBrightnessRatio = 0.44
   const highlightBrightnessRatio = 1.2
+  const shadowMaskData = options.shadowMaskData?.data
+  const hasShadowMask = shadowMaskData?.length === data.length
+  let maxShadowMaskAlpha = 0
+
+  if (hasShadowMask) {
+    for (let i = 0; i < shadowMaskData.length; i += 4) {
+      if (data[i + 3] < 32) continue
+      maxShadowMaskAlpha = Math.max(maxShadowMaskAlpha, shadowMaskData[i + 3])
+    }
+  }
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
@@ -286,11 +301,14 @@ export function recolorHair(imageData, target, options = {}) {
       (1 - shadowBrightnessRatio) * shadowWeight +
       (highlightBrightnessRatio - 1) * highlightWeight
     const outputValue = clamp(targetValue * brightnessRatio, 0, 1)
-    const shadowSaturation = Math.max(targetSaturation + 0.17, 0.42)
+    const explicitShadowWeight =
+      hasShadowMask && maxShadowMaskAlpha > 0
+        ? shadowMaskData[i + 3] / maxShadowMaskAlpha
+        : 0
     const output = hsvToRgb(
       target.h,
       clamp(
-        targetSaturation + (shadowSaturation - targetSaturation) * shadowWeight,
+        targetSaturation + explicitShadowWeight * 0.17,
         0,
         1
       ),
@@ -348,7 +366,7 @@ export function recolorEyes(imageData, target, options = {}) {
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] < 32) continue
     const source = rgbToHsv(data[i], data[i + 1], data[i + 2])
-    if (source.v <= 28 / 255 || source.s < 0.16) continue
+    if (source.v <= 0.16 || source.s < 0.16) continue
 
     const weight = source.s * (data[i + 3] / 255)
     const hue = Math.round(source.h) % 360
@@ -377,6 +395,8 @@ export function recolorEyes(imageData, target, options = {}) {
     const b = data[i + 2]
     const source = rgbToHsv(r, g, b)
     const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
+
+    if (source.v < 0.16 && hueDistance(source.h, baseHue) > 45) continue
 
     if (source.s < 0.16 && source.v > 0.72) {
       if (whiteBlend > 0) {
