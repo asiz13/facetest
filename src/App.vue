@@ -363,6 +363,7 @@ async function createLayer(spec, width, height) {
       }
       recolorHair(imageData, spec.color, {
         stripWhiteEdge: spec.stripWhiteEdge === true,
+        inferShadowSaturation: spec.inferShadowSaturation,
         shadowMaskData
       })
     }
@@ -448,6 +449,7 @@ const activeLayers = computed(() => {
       color: hair,
       removeWhiteBackground: assets.eyebrow?.removeWhiteBackground,
       stripWhiteEdge: true,
+      inferShadowSaturation: false,
       ...partTransform('eyebrow')
     },
     {

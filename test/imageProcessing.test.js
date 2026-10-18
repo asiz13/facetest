@@ -96,6 +96,69 @@ test('hair shadows get the same saturation boost regardless of depth, not on lin
   assert.ok(Math.abs(line.s - 0.5) < 0.02)
 })
 
+test('unmasked chromatic hair shadows get a uniform boost while near-black linework does not', () => {
+  const imageData = makeImageData(
+    [240, 150, 180, 255],
+    [240, 150, 180, 255],
+    [240, 150, 180, 255],
+    [190, 70, 110, 255],
+    [150, 40, 80, 255],
+    [20, 18, 22, 255]
+  )
+
+  recolorHair(imageData, { h: 330, s: 50, v: 75 })
+
+  const base = rgbToHsv(...pixelAt(imageData, 0).slice(0, 3))
+  const lightShadow = rgbToHsv(...pixelAt(imageData, 3).slice(0, 3))
+  const deepShadow = rgbToHsv(...pixelAt(imageData, 4).slice(0, 3))
+  const line = rgbToHsv(...pixelAt(imageData, 5).slice(0, 3))
+  assert.ok(Math.abs(lightShadow.h - 330) < 1)
+  assert.ok(Math.abs(deepShadow.h - 330) < 1)
+  assert.ok(Math.abs(lightShadow.s - 0.67) < 0.02)
+  assert.ok(Math.abs(deepShadow.s - 0.67) < 0.02)
+  assert.ok(Math.abs(base.s - 0.5) < 0.02)
+  assert.ok(Math.abs(line.s - 0.5) < 0.02)
+  assert.ok(deepShadow.v < lightShadow.v)
+  assert.ok(lightShadow.v < base.v)
+})
+
+test('misaligned shadow masks fall back to chromatic shadow detection', () => {
+  const imageData = makeImageData(
+    [240, 150, 180, 255],
+    [240, 150, 180, 255],
+    [240, 150, 180, 255],
+    [190, 70, 110, 255],
+    [150, 40, 80, 255],
+    [20, 18, 22, 255],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+  )
+  const shadowMaskData = makeMaskData(0, 0, 0, 0, 0, 0, 152, 152)
+
+  recolorHair(imageData, { h: 330, s: 50, v: 75 }, { shadowMaskData })
+
+  const shadow = rgbToHsv(...pixelAt(imageData, 3).slice(0, 3))
+  const line = rgbToHsv(...pixelAt(imageData, 5).slice(0, 3))
+  assert.ok(Math.abs(shadow.s - 0.67) < 0.02)
+  assert.ok(Math.abs(line.s - 0.5) < 0.02)
+})
+
+test('line-only hair parts can disable inferred shadow saturation', () => {
+  const imageData = makeImageData(
+    [240, 150, 180, 255],
+    [240, 150, 180, 255],
+    [240, 150, 180, 255],
+    [190, 70, 110, 255]
+  )
+
+  recolorHair(imageData, { h: 330, s: 50, v: 75 }, {
+    inferShadowSaturation: false
+  })
+
+  const line = rgbToHsv(...pixelAt(imageData, 3).slice(0, 3))
+  assert.ok(Math.abs(line.s - 0.5) < 0.02)
+})
+
 test('hair styles with shadow pixels dominating the image keep their brighter base', () => {
   const imageData = makeImageData(
     ...Array.from({ length: 6 }, () => [90, 0, 0, 255]),

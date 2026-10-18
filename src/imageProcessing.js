@@ -254,16 +254,23 @@ function buildLuminanceProfile(
 ) {
   const data = imageData.data
   const luminanceHistogram = new Uint32Array(256)
+  const valueHistogram = new Uint32Array(256)
   const saturationTotals = new Float64Array(256)
   let maxShadowMaskAlpha = 0
+  let shadowMaskPixelCount = 0
+  let overlappingShadowMaskPixelCount = 0
   let hueWeightTotal = 0
   let baseSaturationTotal = 0
   let total = 0
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
-    if (shadowMaskData && alpha >= 32) {
-      maxShadowMaskAlpha = Math.max(maxShadowMaskAlpha, shadowMaskData[i + 3])
+    if (shadowMaskData && shadowMaskData[i + 3] >= 32) {
+      shadowMaskPixelCount += 1
+      if (alpha >= 32) {
+        overlappingShadowMaskPixelCount += 1
+        maxShadowMaskAlpha = Math.max(maxShadowMaskAlpha, shadowMaskData[i + 3])
+      }
     }
     if (alpha < 8) continue
 
@@ -286,6 +293,7 @@ function buildLuminanceProfile(
     const luminance = Math.round(r * 0.2126 + g * 0.7152 + b * 0.0722)
     const bin = clamp(luminance, 0, 255)
     luminanceHistogram[bin] += 1
+    valueHistogram[max] += 1
     saturationTotals[bin] += saturation
     total += 1
   }
@@ -294,33 +302,40 @@ function buildLuminanceProfile(
     return {
       low: 0,
       base: 128,
+      baseValue: 128,
       high: 255,
       baseSaturation: 0,
       maxShadowMaskAlpha,
+      shadowMaskCoverage: 0,
       hueWeightTotal,
       baseSaturationTotal
     }
   }
 
-  const percentile = (ratio) => {
+  const percentile = (histogram, ratio) => {
     const target = total * ratio
     let running = 0
-    for (let index = 0; index < luminanceHistogram.length; index += 1) {
-      running += luminanceHistogram[index]
+    for (let index = 0; index < histogram.length; index += 1) {
+      running += histogram[index]
       if (running >= target) return index
     }
     return 255
   }
 
   // A higher percentile prevents shadow-heavy styles from defining their own base as a shadow.
-  const base = percentile(0.7)
+  const base = percentile(luminanceHistogram, 0.7)
 
   return {
-    low: percentile(0.01),
+    low: percentile(luminanceHistogram, 0.01),
     base,
-    high: percentile(0.99),
+    baseValue: percentile(valueHistogram, 0.7),
+    high: percentile(luminanceHistogram, 0.99),
     baseSaturation: saturationTotals[base] / luminanceHistogram[base],
     maxShadowMaskAlpha,
+    shadowMaskCoverage:
+      shadowMaskPixelCount > 0
+        ? overlappingShadowMaskPixelCount / shadowMaskPixelCount
+        : 0,
     hueWeightTotal,
     baseSaturationTotal
   }
@@ -359,6 +374,11 @@ export function recolorHair(imageData, target, options = {}) {
     shadowMaskData: hasShadowMask ? shadowMaskData : null
   })
   const shadowSpan = Math.max(profile.base - profile.low, 1)
+  // Ignore masks that mostly miss the opaque hair and distinguish fallbacks from dark linework.
+  const hasReliableShadowMask =
+    hasShadowMask &&
+    profile.maxShadowMaskAlpha > 0 &&
+    profile.shadowMaskCoverage >= 0.35
   // Keep detail from narrow shadow regions while excluding transparent edges.
   const shadowBrightnessRatio = 0.44
   const highlightBrightnessRatio = 1.2
@@ -392,8 +412,7 @@ export function recolorHair(imageData, target, options = {}) {
     // Luminance keeps shaded strands that share the same brightest RGB channel.
     const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
     const valueShadow = clamp((profile.base - luminance) / shadowSpan, 0, 1)
-    const saturationShadow = clamp((saturation - profile.baseSaturation) / 0.17, 0, 1)
-    const shadowWeight = Math.max(valueShadow, saturationShadow)
+    const shadowWeight = valueShadow
     const highlightWeight = clamp(
       (luminance - profile.base) / Math.max(255 - profile.base, 24),
       0,
@@ -405,13 +424,21 @@ export function recolorHair(imageData, target, options = {}) {
       (highlightBrightnessRatio - 1) * highlightWeight
     const outputValue = clamp(targetValue * brightnessRatio, 0, 1)
     const explicitShadowWeight =
-      hasShadowMask && profile.maxShadowMaskAlpha > 0
+      hasReliableShadowMask
         ? shadowMaskData[i + 3] / profile.maxShadowMaskAlpha
+        : 0
+    const inferredShadowWeight =
+      !hasReliableShadowMask &&
+      options.inferShadowSaturation !== false &&
+      luminance < profile.base &&
+      saturation >= 0.14 &&
+      max > profile.baseValue * 0.6
+        ? 1
         : 0
     writeHairColor(
       i,
       clamp(
-        targetSaturation + explicitShadowWeight * 0.17,
+        targetSaturation + Math.max(explicitShadowWeight, inferredShadowWeight) * 0.17,
         0,
         1
       ),
