@@ -15,22 +15,27 @@ import {
   Palette,
   RotateCcw,
   ScanFace,
-  Scaling,
   Sparkles,
   Undo2
 } from 'lucide-vue-next'
 import {
   hsvToRgb,
   recolorBlush,
+  recolorEyeShadow,
   recolorEyes,
   recolorHair,
   recolorNose,
   recolorSkin,
   removeWhiteBackdrop
 } from './imageProcessing'
+import {
+  accessoryRecolorKind,
+  buildEyeShadowBindings,
+  randomBlushColor
+} from './assetRules'
 
 const assetModules = import.meta.glob(
-  '../{behindhair,clothes,eyebrow,eyes,fonthair,head,mouths,noses,shy}/*.{png,PNG,jpg,JPG,jpeg,JPEG}',
+  '../{behindhair,clothes,eyebrow,eyes,eyes-sh,fonthair,head,mouths,noses,shy}/*.{png,PNG,jpg,JPG,jpeg,JPEG}',
   { eager: true, query: '?url', import: 'default' }
 )
 
@@ -71,6 +76,17 @@ for (const assets of Object.values(assetBuckets)) {
   assets.sort((a, b) => a.order - b.order || a.file.localeCompare(b.file))
 }
 
+const eyeShadowBindings = buildEyeShadowBindings(
+  assetBuckets.eyes?.map((asset) => asset.file) ?? [],
+  assetBuckets['eyes-sh']?.map((asset) => asset.file) ?? []
+)
+const eyeShadowAssets = new Map(
+  [...eyeShadowBindings].map(([eyeFile, shadowFile]) => [
+    eyeFile,
+    assetBuckets['eyes-sh']?.find((asset) => asset.file === shadowFile)
+  ])
+)
+
 const selected = reactive({
   fonthair: 0,
   eyebrow: 0,
@@ -88,8 +104,6 @@ function defaultPartState(key) {
     visible: key === 'shy',
     offsetX: 0,
     offsetY: 0,
-    scale: 100,
-    spacing: 0,
     closeMode: 'reset'
   }
 }
@@ -274,7 +288,7 @@ function colorKey(kind, color) {
   if (kind === 'hair') return `${color.h}-${color.s}-${color.v}`
   if (kind === 'eyes') return `${color.h}-${color.s}-${color.v}`
   if (kind === 'blush') return `${color.h}-${color.s}-${color.v}`
-  if (kind === 'skin' || kind === 'nose') {
+  if (kind === 'skin' || kind === 'nose' || kind === 'eyeShadow') {
     return `${color.tone}-${color.h}-${color.s}-${color.v}`
   }
   return 'plain'
@@ -370,6 +384,7 @@ async function createLayer(spec, width, height) {
     if (spec.kind === 'eyes') {
       recolorEyes(imageData, spec.color, { whiteBlend: spec.whiteBlend ?? 0 })
     }
+    if (spec.kind === 'eyeShadow') recolorEyeShadow(imageData, spec.color)
     if (spec.kind === 'blush') recolorBlush(imageData, spec.color)
     if (spec.kind === 'nose') recolorNose(imageData, spec.color)
     if (spec.kind === 'skin') recolorSkin(imageData, spec.color)
@@ -386,22 +401,21 @@ function partTransform(key, index = selected[key]) {
   return applied
     ? {
         offsetX: state.offsetX,
-        offsetY: state.offsetY,
-        scale: state.scale / 100,
-        scaleX: 1 + state.spacing / 100
+        offsetY: state.offsetY
       }
-    : { offsetX: 0, offsetY: 0, scale: 1, scaleX: 1 }
+    : { offsetX: 0, offsetY: 0 }
 }
 
 const activeLayers = computed(() => {
   const assets = activeAssets.value
+  const eyeShadowAsset = eyeShadowAssets.get(assets.eyes?.file)
   const accessoryLayers = (assetBuckets.shy ?? [])
     .map((asset, index) =>
       partState.shy[index]?.visible
         ? {
             url: asset.url,
             previewUrl: asset.previewUrl,
-            kind: 'blush',
+            kind: accessoryRecolorKind(asset.file),
             color: blush,
             ...partTransform('shy', index)
           }
@@ -426,6 +440,14 @@ const activeLayers = computed(() => {
       kind: 'skin',
       color: skin,
       ...partTransform('head')
+    },
+    {
+      url: eyeShadowAsset?.url,
+      previewUrl: eyeShadowAsset?.previewUrl,
+      kind: 'eyeShadow',
+      color: skin,
+      removeWhiteBackground: true,
+      ...partTransform('eyes')
     },
     ...accessoryLayers,
     { url: clothes1.value?.url, previewUrl: clothes1.value?.previewUrl, kind: 'skin', color: skin },
@@ -467,6 +489,7 @@ const activeLayers = computed(() => {
       previewUrl: assets.eyes?.previewUrl,
       kind: 'eyes',
       color: eyes,
+      removeWhiteBackground: true,
       whiteBlend: (skin.tone / 100) * 0.18,
       ...partTransform('eyes')
     }
@@ -506,9 +529,7 @@ async function createSceneLayers(
       layers.push({
         canvas: await createLayer({ ...spec, url }, width, height),
         offsetX: (spec.offsetX ?? 0) * offsetScaleX,
-        offsetY: (spec.offsetY ?? 0) * offsetScaleY,
-        scale: spec.scale ?? 1,
-        scaleX: spec.scaleX ?? 1
+        offsetY: (spec.offsetY ?? 0) * offsetScaleY
       })
       onLayerReady?.(layers)
     } catch {
@@ -517,9 +538,7 @@ async function createSceneLayers(
         layers.push({
           canvas: await createLayer({ ...spec, url: spec.url }, width, height),
           offsetX: (spec.offsetX ?? 0) * offsetScaleX,
-          offsetY: (spec.offsetY ?? 0) * offsetScaleY,
-          scale: spec.scale ?? 1,
-          scaleX: spec.scaleX ?? 1
+          offsetY: (spec.offsetY ?? 0) * offsetScaleY
         })
         onLayerReady?.(layers)
       } catch {
@@ -539,19 +558,7 @@ function drawScene(canvas, layers) {
   const context = canvas.getContext('2d')
   context.clearRect(0, 0, canvas.width, canvas.height)
   for (const layer of layers) {
-    if (layer.scale === 1 && layer.scaleX === 1) {
-      context.drawImage(layer.canvas, layer.offsetX, layer.offsetY)
-      continue
-    }
-    const width = canvas.width * layer.scale * layer.scaleX
-    const height = canvas.height * layer.scale
-    context.drawImage(
-      layer.canvas,
-      (canvas.width - width) / 2 + layer.offsetX,
-      (canvas.height - height) / 2 + layer.offsetY,
-      width,
-      height
-    )
+    context.drawImage(layer.canvas, layer.offsetX, layer.offsetY)
   }
 }
 
@@ -615,8 +622,6 @@ function resetPartAdjustment(key) {
   const state = selectedPartState.value[key]
   state.offsetX = 0
   state.offsetY = 0
-  state.scale = 100
-  state.spacing = 0
 }
 
 function resetAllPartAdjustments() {
@@ -624,8 +629,6 @@ function resetAllPartAdjustments() {
     for (const state of partState[definition.key]) {
       state.offsetX = 0
       state.offsetY = 0
-      state.scale = 100
-      state.spacing = 0
     }
   }
 }
@@ -636,22 +639,13 @@ function setPartVisible(key, index, visible) {
 }
 
 function nudgePart(key, field, delta) {
-  const limits =
-    field === 'offsetX'
-      ? [-260, 260]
-      : field === 'offsetY'
-        ? [-220, 220]
-        : [-35, 35]
+  const limits = field === 'offsetX' ? [-260, 260] : [-220, 220]
   const state = selectedPartState.value[key]
   state[field] = clampNumber(state[field] + delta, limits[0], limits[1])
 }
 
 function signedOffset(value) {
   return `${value > 0 ? '+' : ''}${value}px`
-}
-
-function signedPercent(value) {
-  return `${value > 0 ? '+' : ''}${value}%`
 }
 
 function randomItem(items) {
@@ -725,7 +719,7 @@ function applyRandomColors() {
     s: 78 + Math.round(Math.random() * 22),
     v: 78 + Math.round(Math.random() * 22)
   })
-  Object.assign(blush, randomItem(blushPalettes))
+  Object.assign(blush, randomBlushColor())
 
   setSkinTone(Math.round(Math.random() * 100))
 }
@@ -900,6 +894,7 @@ onBeforeUnmount(() => {
             <span>&#30524;&#30555;</span>
             <span>&#21069;&#21457;</span>
             <span>&#30473;&#27611;</span>
+            <span>&#30524;&#30555;&#38452;&#24433;</span>
             <span>&#40763;&#23376;</span>
             <span>&#22068;&#22411;</span>
             <span>&#34915;&#39280;&#21069;&#23618;</span>
@@ -1000,21 +995,6 @@ onBeforeUnmount(() => {
                 <div v-if="selectedPartState[definition.key].enabled" class="adjust-controls">
                   <div class="adjust-field">
                     <span>
-                      <Scaling :size="13" />
-                      &#22823;&#23567;
-                    </span>
-                    <output>{{ selectedPartState[definition.key].scale }}%</output>
-                    <input
-                      v-model.number="selectedPartState[definition.key].scale"
-                      type="range"
-                      min="50"
-                      max="150"
-                      step="1"
-                      :aria-label="`${definition.label}\u5927\u5c0f`"
-                    />
-                  </div>
-                  <div class="adjust-field">
-                    <span>
                       <MoveHorizontal :size="13" />
                       &#24038;&#21491;&#20301;&#32622;
                     </span>
@@ -1071,21 +1051,6 @@ onBeforeUnmount(() => {
                       ><ArrowDown :size="14" /></button>
                     </div>
                   </div>
-                  <div class="adjust-field">
-                    <span>
-                      <MoveHorizontal :size="13" />
-                      &#38388;&#36317;
-                    </span>
-                    <output>{{ signedPercent(selectedPartState[definition.key].spacing) }}</output>
-                    <input
-                      v-model.number="selectedPartState[definition.key].spacing"
-                      type="range"
-                      min="-35"
-                      max="35"
-                      step="1"
-                      :aria-label="`${definition.label}\u95f4\u8ddd`"
-                    />
-                  </div>
                   <div class="close-policy">
                     <span>&#20851;&#38381;&#26102;</span>
                     <label>
@@ -1110,11 +1075,8 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-else class="part-closed">
                   <span v-if="selectedPartState[definition.key].closeMode === 'keep'">
-                    &#35843;&#25972;&#27839;&#29992;
-                    {{ selectedPartState[definition.key].scale }}% ·
-                    X{{ signedOffset(selectedPartState[definition.key].offsetX) }} ·
-                    Y{{ signedOffset(selectedPartState[definition.key].offsetY) }} ·
-                    &#38388;&#36317;{{ signedPercent(selectedPartState[definition.key].spacing) }}
+                    &#35843;&#25972;&#27839;&#29992; X{{ signedOffset(selectedPartState[definition.key].offsetX) }}
+                    · Y{{ signedOffset(selectedPartState[definition.key].offsetY) }}
                   </span>
                   <span v-else>&#35843;&#25972;&#24050;&#36824;&#21407;</span>
                 </div>

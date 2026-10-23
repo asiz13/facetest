@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  recolorEyeShadow,
   recolorEyes,
   recolorHair,
   recolorNose,
@@ -310,6 +311,20 @@ test('eye brightness control changes the base while retaining its source shading
   assert.ok(brightBase > dimBase + 0.2)
   assert.ok(brightContrast > 0.2)
   assert.ok(dimContrast > 0.1)
+})
+
+test('eye shadows take the skin color and preserve their transparency', () => {
+  const imageData = makeImageData(
+    [240, 213, 190, 255],
+    [240, 213, 190, 128],
+    [240, 213, 190, 0]
+  )
+
+  recolorEyeShadow(imageData, { r: 198, g: 151, b: 122 })
+
+  assert.deepEqual(pixelAt(imageData, 0), [178, 136, 110, 255])
+  assert.deepEqual(pixelAt(imageData, 1), [178, 136, 110, 128])
+  assert.deepEqual(pixelAt(imageData, 2), [240, 213, 190, 0])
 })
 
 test('nose recoloring includes warm shadow pixels and keeps their depth', () => {

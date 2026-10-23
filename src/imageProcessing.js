@@ -554,6 +554,18 @@ export function recolorEyes(imageData, target, options = {}) {
   }
 }
 
+export function recolorEyeShadow(imageData, target) {
+  const data = imageData.data
+  const shadowShade = 0.9
+
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue
+    data[i] = Math.round(target.r * shadowShade)
+    data[i + 1] = Math.round(target.g * shadowShade)
+    data[i + 2] = Math.round(target.b * shadowShade)
+  }
+}
+
 export function recolorNose(imageData, target) {
   const data = imageData.data
 
