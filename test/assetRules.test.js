@@ -31,44 +31,47 @@ function imageFiles(folder) {
 }
 
 const eyeFiles = [
-  'IMG_0673.PNG',
-  'IMG_0664.PNG',
-  'IMG_0674.PNG',
-  'IMG_0675.PNG'
+  'IMG_0735.PNG',
+  'IMG_0722.PNG',
+  'IMG_0736.PNG',
+  'IMG_0723.PNG'
 ]
 const shadowFiles = [
-  'IMG_0698.PNG',
-  'IMG_0715.PNG',
-  'IMG_0697.PNG',
-  'IMG_0699.PNG'
+  'IMG_0765.PNG',
+  'IMG_0763.PNG',
+  'IMG_0766.PNG',
+  'IMG_0764.PNG'
 ]
 
-test('eye shadows keep the special pair and otherwise bind by ascending number', () => {
+test('eye shadows bind from the declared start pair and follow sorted order', () => {
   const bindings = buildEyeShadowBindings(eyeFiles, shadowFiles)
 
-  assert.equal(bindings.get('IMG_0664.PNG'), 'IMG_0715.PNG')
-  assert.equal(bindings.get('IMG_0673.PNG'), 'IMG_0697.PNG')
-  assert.equal(bindings.get('IMG_0674.PNG'), 'IMG_0698.PNG')
-  assert.equal(bindings.get('IMG_0675.PNG'), 'IMG_0699.PNG')
+  assert.equal(bindings.get('IMG_0722.PNG'), 'IMG_0763.PNG')
+  assert.equal(bindings.get('IMG_0723.PNG'), 'IMG_0764.PNG')
+  assert.equal(bindings.get('IMG_0735.PNG'), 'IMG_0765.PNG')
+  assert.equal(bindings.get('IMG_0736.PNG'), 'IMG_0766.PNG')
 })
 
-test('the current eye library has nineteen complete shadow bindings and no old eyes', () => {
+test('the current eye library has eighteen complete shadow bindings and no old eyes', () => {
   const currentEyeFiles = imageFiles('eyes')
   const currentShadowFiles = imageFiles('eyes-sh')
   const expectedEyeFiles = [
-    'IMG_0664.PNG',
-    ...Array.from({ length: 18 }, (_, index) => `IMG_${String(673 + index).padStart(4, '0')}.PNG`)
+    'IMG_0722.PNG',
+    'IMG_0723.PNG',
+    ...Array.from({ length: 5 }, (_, index) => `IMG_${String(735 + index).padStart(4, '0')}.PNG`),
+    ...Array.from({ length: 11 }, (_, index) => `IMG_${String(742 + index).padStart(4, '0')}.PNG`)
+  ]
+  const expectedShadowFiles = [
+    ...Array.from({ length: 8 }, (_, index) => `IMG_${String(763 + index).padStart(4, '0')}.PNG`),
+    ...Array.from({ length: 10 }, (_, index) => `IMG_${String(753 + index).padStart(4, '0')}.PNG`)
   ]
   const bindings = buildEyeShadowBindings(currentEyeFiles, currentShadowFiles)
 
   assert.deepEqual(currentEyeFiles, expectedEyeFiles)
-  assert.equal(currentShadowFiles.length, 19)
-  assert.equal(bindings.size, 19)
-  for (let index = 0; index < 18; index += 1) {
-    assert.equal(
-      bindings.get(`IMG_${String(673 + index).padStart(4, '0')}.PNG`),
-      `IMG_${String(697 + index).padStart(4, '0')}.PNG`
-    )
+  assert.deepEqual(currentShadowFiles, [...expectedShadowFiles].sort())
+  assert.equal(bindings.size, 18)
+  for (let index = 0; index < expectedEyeFiles.length; index += 1) {
+    assert.equal(bindings.get(expectedEyeFiles[index]), expectedShadowFiles[index])
   }
 })
 

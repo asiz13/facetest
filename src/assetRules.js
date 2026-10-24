@@ -1,4 +1,4 @@
-const EYE_SHADOW_SPECIAL_PAIR = ['IMG_0664.PNG', 'IMG_0715.PNG']
+const EYE_SHADOW_START_PAIR = ['IMG_0722.PNG', 'IMG_0763.PNG']
 const FIXED_COLOR_ACCESSORY_FILES = new Set(['IMG_0609.PNG'])
 
 const BLUSH_HUES = [340, 354, 18, 28]
@@ -14,30 +14,25 @@ function numericFileOrder(first, second) {
 }
 
 export function buildEyeShadowBindings(eyeFiles, shadowFiles) {
-  const availableEyeFiles = new Map(
-    eyeFiles.map((file) => [normalizedFileKey(file), file])
-  )
-  const availableShadowFiles = new Map(
-    shadowFiles.map((file) => [normalizedFileKey(file), file])
-  )
+  const orderedEyes = [...eyeFiles].sort(numericFileOrder)
+  const orderedShadows = [...shadowFiles].sort(numericFileOrder)
   const bindings = new Map()
-  const [specialEye, specialShadow] = EYE_SHADOW_SPECIAL_PAIR
-  const specialShadowFile = availableShadowFiles.get(normalizedFileKey(specialShadow))
+  const [startEye, startShadow] = EYE_SHADOW_START_PAIR
+  const eyeStartIndex = orderedEyes.findIndex(
+    (file) => normalizedFileKey(file) === normalizedFileKey(startEye)
+  )
+  const shadowStartIndex = orderedShadows.findIndex(
+    (file) => normalizedFileKey(file) === normalizedFileKey(startShadow)
+  )
+  const eyeOffset = eyeStartIndex >= 0 ? eyeStartIndex : 0
+  const shadowOffset = shadowStartIndex >= 0 ? shadowStartIndex : 0
+  const pairCount = Math.min(orderedEyes.length, orderedShadows.length)
 
-  if (availableEyeFiles.has(normalizedFileKey(specialEye)) && specialShadowFile) {
-    bindings.set(availableEyeFiles.get(normalizedFileKey(specialEye)), specialShadowFile)
-  }
-
-  const regularEyes = eyeFiles
-    .filter((file) => normalizedFileKey(file) !== normalizedFileKey(specialEye))
-    .sort(numericFileOrder)
-  const regularShadows = shadowFiles
-    .filter((file) => normalizedFileKey(file) !== normalizedFileKey(specialShadow))
-    .sort(numericFileOrder)
-
-  const pairCount = Math.min(regularEyes.length, regularShadows.length)
   for (let index = 0; index < pairCount; index += 1) {
-    bindings.set(regularEyes[index], regularShadows[index])
+    bindings.set(
+      orderedEyes[(eyeOffset + index) % orderedEyes.length],
+      orderedShadows[(shadowOffset + index) % orderedShadows.length]
+    )
   }
 
   return bindings
